@@ -1,0 +1,17 @@
+.data
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+node_modules
+dist
+native
+tray
+extension
+test
+docs
+scripts
+.git
+.DS_Store
+*.log

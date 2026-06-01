@@ -1,0 +1,9 @@
+{
+  "name": "com.xunit.xsync",
+  "description": "xsync native messaging host",
+  "path": "/Applications/xsync.app/Contents/MacOS/xsync-tray",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_EXTENSION_ID/"
+  ]
+}

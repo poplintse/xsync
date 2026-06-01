@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>xsync</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="header">
+      <div>
+        <h1>xsync</h1>
+        <p id="statusText">未连接</p>
+      </div>
+      <button id="authorizeButton" type="button">授权设备</button>
+    </header>
+
+    <section class="panel">
+      <label>
+        服务器地址
+        <input id="serverUrlInput" type="url" autocomplete="off">
+      </label>
+
+      <label>
+        设备 Access Token
+        <input id="accessTokenInput" type="password" autocomplete="off" placeholder="托盘 App 接入前可临时粘贴">
+      </label>
+
+      <div class="inline-actions">
+        <button id="nativeTokenButton" type="button">从托盘 App 获取 Token</button>
+      </div>
+
+      <label>
+        一次性授权码
+        <input id="deviceCodeInput" type="text" autocomplete="off" placeholder="从授权页复制 code">
+      </label>
+
+      <div class="inline-actions">
+        <button id="finishAuthorizationButton" type="button">完成授权</button>
+      </div>
+
+      <label>
+        远端集合 ID
+        <input id="collectionIdInput" type="number" min="1" placeholder="留空则创建新集合">
+      </label>
+
+      <label>
+        远端集合名称
+        <input id="collectionNameInput" type="text" placeholder="例如：Bookmarks Bar">
+      </label>
+
+      <label>
+        同步方式
+        <select id="modeSelect">
+          <option value="merge">合并</option>
+          <option value="local_over_server">本地覆盖服务器</option>
+          <option value="server_over_local">服务器覆盖本地</option>
+        </select>
+      </label>
+    </section>
+
+    <section class="panel bookmark-panel">
+      <div class="panel-title">
+        <h2>本地书签目录</h2>
+        <button id="reloadBookmarksButton" type="button">刷新</button>
+      </div>
+      <div id="bookmarkTree" class="tree"></div>
+    </section>
+
+    <section class="panel">
+      <div class="actions">
+        <button id="previewButton" type="button">预览变更</button>
+        <button id="syncButton" type="button" class="primary">立即同步</button>
+      </div>
+      <pre id="resultBox"></pre>
+    </section>
+  </main>
+
+  <script src="options.js"></script>
+</body>
+</html>
