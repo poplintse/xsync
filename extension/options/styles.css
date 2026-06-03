@@ -188,6 +188,23 @@ button:disabled {
   margin: 0;
 }
 
+.tree-checkbox-spacer {
+  width: 13px;
+}
+
+.tree-toggle {
+  background: transparent;
+  border: 0;
+  color: #68717c;
+  line-height: 1;
+  padding: 0;
+  width: 14px;
+}
+
+.tree-toggle:disabled {
+  opacity: 1;
+}
+
 .tree-option.selected {
   background: #dfeee7;
   color: #164a39;

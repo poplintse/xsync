@@ -52,8 +52,10 @@ The full device authorization flow remains available by setting
 6. Create an account on the first device. To authorize another device, generate
    a one-time pairing code on an authorized device and enter it on the new one.
 7. Each device receives its own API token. The server stores only token hashes.
-8. Select one bookmark folder or bookmark. Its full bookmark path becomes the
-   remote collection name.
+8. In backup mode, select one bookmark folder or bookmark. Each backup is named
+   with its time, device name, and full bookmark path.
+9. In restore mode, choose a server backup. The extension restores it to the
+   original bookmark path by merging backup and local contents.
 
 ## Install Native Messaging Host
 

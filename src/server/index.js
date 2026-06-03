@@ -24,6 +24,7 @@ const storePath = join(config.dataDir, "store.json");
 const sessions = new Map();
 let store = await loadStore();
 store.pairingCodes ??= [];
+store.backups ??= [];
 
 const server = createServer((req, res) => {
   handleRequest(req, res).catch((error) => {
@@ -126,6 +127,26 @@ async function handleApiRoute(req, res, routePath, auth) {
     return startLitePairing(res, auth, body);
   }
 
+  if (config.authMode === "api_token" && req.method === "GET" && routePath === "/api/backups") {
+    const backups = store.backups
+      .filter((backup) => backup.userId === auth.user.id)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map(withoutBackupTree);
+    return sendJson(res, 200, { backups });
+  }
+
+  if (config.authMode === "api_token" && req.method === "POST" && routePath === "/api/backups") {
+    const body = await readJsonBody(req);
+    return createBackup(res, auth, body);
+  }
+
+  const backupMatch = routePath.match(/^\/api\/backups\/([^/]+)$/);
+  if (config.authMode === "api_token" && req.method === "GET" && backupMatch) {
+    const backup = findUserBackup(auth.user.id, backupMatch[1]);
+    if (!backup) return sendJson(res, 404, { error: "backup_not_found" });
+    return sendJson(res, 200, { backup: withoutBackupTree(backup), tree: backup.tree });
+  }
+
   if (req.method === "GET" && routePath === "/api/collections") {
     const collections = store.collections
       .filter((collection) => collection.userId === auth.user.id)
@@ -156,6 +177,31 @@ async function handleApiRoute(req, res, routePath, auth) {
   }
 
   sendJson(res, 404, { error: "not_found" });
+}
+
+async function createBackup(res, auth, body) {
+  const tree = body.tree ?? body.local_tree ?? body.localTree ?? null;
+  if (!tree || typeof tree !== "object") return sendJson(res, 400, { error: "missing_tree" });
+  const bookmarkPath = String(body.bookmark_path ?? body.bookmarkPath ?? "").trim();
+  if (!bookmarkPath) return sendJson(res, 400, { error: "missing_bookmark_path" });
+  const bookmarkPathParts = Array.isArray(body.bookmark_path_parts ?? body.bookmarkPathParts)
+    ? (body.bookmark_path_parts ?? body.bookmarkPathParts).map((item) => String(item))
+    : bookmarkPath.split(" / ");
+  const deviceName = String(body.device_name ?? body.deviceName ?? auth.device.name ?? "Chrome").trim() || "Chrome";
+  const createdAt = new Date().toISOString();
+  const backup = {
+    id: nextId("backup"),
+    userId: auth.user.id,
+    name: `${formatBackupTimestamp(createdAt)} - ${deviceName} - ${bookmarkPath}`,
+    bookmarkPath,
+    bookmarkPathParts,
+    deviceName,
+    tree,
+    createdAt
+  };
+  store.backups.push(backup);
+  await saveStore();
+  return sendJson(res, 201, { backup: withoutBackupTree(backup) });
 }
 
 async function handleSsoCallback(req, res, url) {
@@ -623,11 +669,12 @@ async function loadStore() {
     return JSON.parse(await readFile(storePath, "utf8"));
   } catch {
     return {
-      nextIds: { user: 1, device: 1, collection: 1, snapshot: 1 },
+      nextIds: { user: 1, device: 1, collection: 1, snapshot: 1, backup: 1 },
       users: [],
       devices: [],
       deviceCodes: [],
       pairingCodes: [],
+      backups: [],
       collections: [],
       syncSnapshots: []
     };
@@ -669,8 +716,18 @@ function findUserCollection(userId, id, name) {
   return store.collections.find((item) => item.userId === userId && item.name === collectionName);
 }
 
+function findUserBackup(userId, id) {
+  const backupId = Number(id);
+  return store.backups.find((item) => item.userId === userId && item.id === backupId);
+}
+
 function withoutTree(collection) {
   const { tree, ...rest } = collection;
+  return rest;
+}
+
+function withoutBackupTree(backup) {
+  const { tree, ...rest } = backup;
   return rest;
 }
 
@@ -774,6 +831,10 @@ function normalizeSyncMode(value) {
 
 function trimTrailingSlash(value) {
   return String(value).replace(/\/+$/, "");
+}
+
+function formatBackupTimestamp(value) {
+  return String(value).replace("T", " ").replace(/\.\d{3}Z$/, "Z");
 }
 
 function normalizeBoolean(value, fallback) {

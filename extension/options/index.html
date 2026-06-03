@@ -74,27 +74,31 @@
       </div>
 
       <fieldset>
-        <legend>同步方式</legend>
+        <legend>操作</legend>
         <label class="radio-option">
-          <input type="radio" name="mode" value="merge">
-          合并
+          <input type="radio" name="operation" value="backup">
+          备份
         </label>
         <label class="radio-option">
-          <input type="radio" name="mode" value="local_over_server">
-          本地覆盖服务器
-        </label>
-        <label class="radio-option">
-          <input type="radio" name="mode" value="server_over_local">
-          服务器覆盖本地
+          <input type="radio" name="operation" value="restore">
+          恢复
         </label>
       </fieldset>
+
+      <div id="restorePanel" class="token-editor restore-panel" hidden>
+        <label>
+          服务器备份
+          <select id="backupSelect"></select>
+        </label>
+        <button id="refreshBackupsButton" type="button">刷新备份列表</button>
+      </div>
     </section>
 
-    <section class="panel bookmark-panel">
+    <section id="bookmarkPanel" class="panel bookmark-panel">
       <div class="panel-title">
         <div>
           <h2>本地书签目录</h2>
-          <p class="hint">只能选择一个目录或具体书签；选择目录会包含其全部子目录。</p>
+          <p class="hint">备份时只能选择收藏夹目录；单个书签可浏览但不可选择。</p>
         </div>
         <button id="reloadBookmarksButton" type="button">刷新</button>
       </div>
@@ -103,9 +107,9 @@
 
     <section class="panel">
       <div class="actions">
-        <button id="syncButton" type="button" class="primary">立即同步</button>
+        <button id="actionButton" type="button" class="primary">立即备份</button>
       </div>
-      <div id="resultBox" class="result-box">尚未同步。</div>
+      <div id="resultBox" class="result-box">尚未执行操作。</div>
     </section>
   </main>
 

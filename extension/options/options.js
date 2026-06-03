@@ -3,7 +3,7 @@ const defaultConfig = {
   tokens: [],
   selectedTokenName: "",
   accountMode: "local",
-  mode: "merge",
+  operation: "backup",
   selectedBookmarkId: ""
 };
 
@@ -24,16 +24,22 @@ const els = {
   pairingCodeInput: document.getElementById("pairingCodeInput"),
   pairDeviceNameInput: document.getElementById("pairDeviceNameInput"),
   finishPairingButton: document.getElementById("finishPairingButton"),
-  modeInputs: [...document.querySelectorAll('input[name="mode"]')],
+  operationInputs: [...document.querySelectorAll('input[name="operation"]')],
+  restorePanel: document.getElementById("restorePanel"),
+  backupSelect: document.getElementById("backupSelect"),
+  refreshBackupsButton: document.getElementById("refreshBackupsButton"),
+  bookmarkPanel: document.getElementById("bookmarkPanel"),
   reloadBookmarksButton: document.getElementById("reloadBookmarksButton"),
   bookmarkTree: document.getElementById("bookmarkTree"),
-  syncButton: document.getElementById("syncButton"),
+  actionButton: document.getElementById("actionButton"),
   resultBox: document.getElementById("resultBox")
 };
 
 let config = { ...defaultConfig };
 let bookmarkRoots = [];
 let bookmarkById = new Map();
+let expandedBookmarkIds = new Set();
+let backups = [];
 
 init();
 
@@ -52,17 +58,18 @@ function bindConfig() {
   els.newDeviceNameInput.value = deviceName;
   els.pairDeviceNameInput.value = deviceName;
   renderAccountMode();
-  renderMode();
+  renderOperation();
 
   els.serverUrlInput.addEventListener("change", saveConfigFromForm);
   for (const input of els.accountModeInputs) input.addEventListener("change", changeAccountMode);
-  for (const input of els.modeInputs) input.addEventListener("change", saveConfigFromForm);
+  for (const input of els.operationInputs) input.addEventListener("change", changeOperation);
   els.useLocalAccountButton.addEventListener("click", useLocalAccount);
   els.startPairingButton.addEventListener("click", startPairing);
   els.createAccountButton.addEventListener("click", createAccount);
   els.finishPairingButton.addEventListener("click", finishPairing);
+  els.refreshBackupsButton.addEventListener("click", loadBackups);
   els.reloadBookmarksButton.addEventListener("click", loadBookmarks);
-  els.syncButton.addEventListener("click", runSync);
+  els.actionButton.addEventListener("click", runAction);
 }
 
 function renderAccountMode() {
@@ -72,8 +79,12 @@ function renderAccountMode() {
   els.pairAccountPanel.hidden = config.accountMode !== "pair";
 }
 
-function renderMode() {
-  for (const input of els.modeInputs) input.checked = input.value === config.mode;
+function renderOperation() {
+  for (const input of els.operationInputs) input.checked = input.value === config.operation;
+  const restoring = config.operation === "restore";
+  els.restorePanel.hidden = !restoring;
+  els.bookmarkPanel.hidden = restoring;
+  els.actionButton.textContent = restoring ? "立即恢复" : "立即备份";
 }
 
 async function changeAccountMode() {
@@ -85,12 +96,18 @@ async function changeAccountMode() {
 async function saveConfigFromForm() {
   config = {
     ...config,
-    serverUrl: normalizeServerUrl(els.serverUrlInput.value),
-    mode: selectedRadioValue(els.modeInputs, "merge")
+    serverUrl: normalizeServerUrl(els.serverUrlInput.value)
   };
   els.serverUrlInput.value = config.serverUrl;
   await chrome.storage.local.set(config);
   renderStatus();
+}
+
+async function changeOperation() {
+  config.operation = selectedRadioValue(els.operationInputs, "backup");
+  await chrome.storage.local.set(config);
+  renderOperation();
+  if (config.operation === "restore") await loadBackups();
 }
 
 function renderLocalAccounts() {
@@ -117,6 +134,7 @@ async function useLocalAccount() {
   await chrome.storage.local.set(config);
   setResult(`已使用账户 "${name}"。`, true);
   renderStatus();
+  if (config.operation === "restore") await loadBackups();
 }
 
 async function createAccount() {
@@ -128,12 +146,13 @@ async function createAccount() {
   setBusy(true);
   try {
     const response = await publicPost("/api/accounts", { token_name: name, device_name: deviceName });
-    saveLocalToken(response.account.tokenName, response.access_token);
+    saveLocalToken(response.account.tokenName, response.access_token, response.device.name);
     els.newAccountNameInput.value = "";
     config.accountMode = "local";
     renderLocalAccounts();
     renderAccountMode();
     setResult(`账户 "${response.account.tokenName}" 已创建，当前设备已授权。`, true);
+    if (config.operation === "restore") await loadBackups();
   } catch (error) {
     setResult(`新建账户失败：${error.message}`, false);
   } finally {
@@ -169,12 +188,13 @@ async function finishPairing() {
   setBusy(true);
   try {
     const response = await publicPost("/api/pairing/finish", { code, device_name: deviceName });
-    saveLocalToken(response.account.tokenName, response.access_token);
+    saveLocalToken(response.account.tokenName, response.access_token, response.device.name);
     els.pairingCodeInput.value = "";
     config.accountMode = "local";
     renderLocalAccounts();
     renderAccountMode();
     setResult(`已配对账户 "${response.account.tokenName}"，当前设备已授权。`, true);
+    if (config.operation === "restore") await loadBackups();
   } catch (error) {
     setResult(`配对失败：${error.message}`, false);
   } finally {
@@ -183,27 +203,77 @@ async function finishPairing() {
   }
 }
 
-function saveLocalToken(name, token) {
+function saveLocalToken(name, token, deviceName) {
   config.tokens = config.tokens.filter((item) => item.name !== name);
-  config.tokens.push({ name, token });
+  config.tokens.push({ name, token, deviceName });
   config.selectedTokenName = name;
   chrome.storage.local.set(config);
+}
+
+async function loadBackups() {
+  const token = currentToken();
+  if (!token) {
+    backups = [];
+    renderBackups();
+    return setResult("请先新建账户、配对账户或选择本机账户。", false);
+  }
+  setBusy(true);
+  try {
+    const response = await apiFetch("/api/backups", null, token, "GET");
+    backups = response.backups ?? [];
+    renderBackups();
+    setResult(backups.length ? "请选择要恢复的服务器备份。" : "服务器上暂无可用备份。");
+  } catch (error) {
+    backups = [];
+    renderBackups();
+    setResult(`读取备份列表失败：${error.message}`, false);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function renderBackups() {
+  els.backupSelect.textContent = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = backups.length ? "请选择备份" : "暂无备份";
+  els.backupSelect.appendChild(placeholder);
+  for (const backup of backups) {
+    const option = document.createElement("option");
+    option.value = String(backup.id);
+    option.textContent = backup.name;
+    els.backupSelect.appendChild(option);
+  }
 }
 
 async function loadBookmarks() {
   setResult("正在读取 Chrome 书签...");
   bookmarkRoots = await chrome.bookmarks.getTree();
   bookmarkById = new Map();
-  for (const root of bookmarkRoots) indexBookmarkNode(root, []);
+  for (const root of bookmarkRoots) indexBookmarkNode(root, [], null);
+  if (bookmarkById.get(config.selectedBookmarkId)?.node.url) {
+    config.selectedBookmarkId = "";
+    await chrome.storage.local.set(config);
+  }
+  expandedBookmarkIds = new Set(bookmarkRoots.map((root) => root.id));
+  expandSelectedBookmarkAncestors();
   renderBookmarkTree();
-  setResult("请选择一个本地书签目录或具体书签。");
+  setResult("请选择一个本地收藏夹目录。");
 }
 
-function indexBookmarkNode(node, parentPath) {
+function indexBookmarkNode(node, parentPath, parentId) {
   const label = bookmarkLabel(node);
   const path = label ? [...parentPath, label] : parentPath;
-  bookmarkById.set(node.id, { node, path });
-  for (const child of node.children ?? []) indexBookmarkNode(child, path);
+  bookmarkById.set(node.id, { node, path, parentId });
+  for (const child of node.children ?? []) indexBookmarkNode(child, path, node.id);
+}
+
+function expandSelectedBookmarkAncestors() {
+  let entry = bookmarkById.get(config.selectedBookmarkId);
+  while (entry?.parentId) {
+    expandedBookmarkIds.add(entry.parentId);
+    entry = bookmarkById.get(entry.parentId);
+  }
 }
 
 function renderBookmarkTree() {
@@ -214,22 +284,43 @@ function renderBookmarkTree() {
 }
 
 function appendBookmarkNode(parent, node, inheritedSelection) {
+  const isFolder = !node.url;
   const selected = node.id === config.selectedBookmarkId;
   const included = inheritedSelection || selected;
   const item = document.createElement("li");
   const label = document.createElement("label");
   label.className = `tree-option${selected ? " selected" : ""}${inheritedSelection ? " inherited" : ""}`;
-  const checkbox = document.createElement("input");
-  checkbox.type = "checkbox";
-  checkbox.checked = included;
-  checkbox.disabled = inheritedSelection;
-  checkbox.addEventListener("change", () => selectBookmarkNode(node.id));
+  const hasChildren = Boolean(node.children?.length);
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "tree-toggle";
+  toggle.textContent = hasChildren ? (expandedBookmarkIds.has(node.id) ? "▾" : "▸") : "";
+  toggle.disabled = !hasChildren;
+  toggle.setAttribute("aria-label", hasChildren ? `${expandedBookmarkIds.has(node.id) ? "收起" : "展开"} ${bookmarkLabel(node)}` : "");
+  toggle.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleBookmarkNode(node.id);
+  });
   const text = document.createElement("span");
   text.textContent = bookmarkLabel(node);
-  label.append(checkbox, text);
+  label.append(toggle);
+  if (isFolder) {
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.checked = included;
+    checkbox.disabled = inheritedSelection;
+    checkbox.addEventListener("change", () => selectBookmarkNode(node.id));
+    label.append(checkbox);
+  } else {
+    const spacer = document.createElement("span");
+    spacer.className = "tree-checkbox-spacer";
+    label.append(spacer);
+  }
+  label.append(text);
   item.appendChild(label);
 
-  if (node.children?.length) {
+  if (hasChildren && expandedBookmarkIds.has(node.id)) {
     const children = document.createElement("ul");
     for (const child of node.children) appendBookmarkNode(children, child, included);
     item.appendChild(children);
@@ -237,7 +328,14 @@ function appendBookmarkNode(parent, node, inheritedSelection) {
   parent.appendChild(item);
 }
 
+function toggleBookmarkNode(id) {
+  if (expandedBookmarkIds.has(id)) expandedBookmarkIds.delete(id);
+  else expandedBookmarkIds.add(id);
+  renderBookmarkTree();
+}
+
 async function selectBookmarkNode(id) {
+  if (bookmarkById.get(id)?.node.url) return;
   config.selectedBookmarkId = config.selectedBookmarkId === id ? "" : id;
   await chrome.storage.local.set(config);
   renderBookmarkTree();
@@ -250,26 +348,49 @@ function bookmarkLabel(node) {
   return node.url || "未命名书签";
 }
 
-async function runSync() {
+async function runAction() {
   await saveConfigFromForm();
-  if (!config.selectedBookmarkId) return setResult("请先选择一个本地书签目录或具体书签。", false);
   const token = currentToken();
   if (!token) return setResult("请先新建账户、配对账户或选择本机账户。", false);
+  if (config.operation === "restore") return restoreBackup(token);
+  return createBackup(token);
+}
 
+async function createBackup(token) {
+  if (!config.selectedBookmarkId) return setResult("请先选择一个本地收藏夹目录。", false);
+  if (bookmarkById.get(config.selectedBookmarkId)?.node.url) return setResult("备份只能选择收藏夹目录。", false);
   setBusy(true);
   try {
     const [node] = await chrome.bookmarks.getSubTree(config.selectedBookmarkId);
-    const localTree = normalizeBookmarkNode(node);
-    const collectionName = bookmarkById.get(config.selectedBookmarkId)?.path.join(" / ") || bookmarkLabel(node);
-    const result = await apiFetch("/api/sync/apply", {
-      mode: config.mode,
-      collection_name: collectionName,
-      local_tree: localTree
+    const bookmarkPathParts = bookmarkById.get(config.selectedBookmarkId)?.path ?? [bookmarkLabel(node)];
+    const bookmarkPath = bookmarkPathParts.join(" / ");
+    const result = await apiFetch("/api/backups", {
+      device_name: currentDeviceName(),
+      bookmark_path: bookmarkPath,
+      bookmark_path_parts: bookmarkPathParts,
+      tree: normalizeBookmarkNode(node)
     }, token);
-    if (config.mode === "server_over_local" && result.tree) await replaceSelectedNode(node, result.tree);
-    setResult(`同步成功\n远端集合：${result.collection.name}\n同步时间：${formatTime(result.collection.updatedAt)}`, true);
+    setResult(`备份成功\n备份名称：${result.backup.name}\n备份时间：${formatTime(result.backup.createdAt)}`, true);
   } catch (error) {
-    setResult(`同步失败：${error.message}`, false);
+    setResult(`备份失败：${error.message}`, false);
+  } finally {
+    setBusy(false);
+    renderStatus();
+  }
+}
+
+async function restoreBackup(token) {
+  const backupId = els.backupSelect.value;
+  if (!backupId) return setResult("请选择要恢复的服务器备份。", false);
+  setBusy(true);
+  try {
+    const result = await apiFetch(`/api/backups/${backupId}`, null, token, "GET");
+    await loadBookmarks();
+    await mergeBackupIntoPath(result.backup.bookmarkPathParts ?? result.backup.bookmarkPath.split(" / "), result.tree);
+    await loadBookmarks();
+    setResult(`恢复成功\n备份名称：${result.backup.name}\n恢复路径：${result.backup.bookmarkPath}\n恢复方式：合并本地与备份内容`, true);
+  } catch (error) {
+    setResult(`恢复失败：${error.message}`, false);
   } finally {
     setBusy(false);
     renderStatus();
@@ -299,13 +420,47 @@ async function parseResponse(response) {
   return data;
 }
 
-async function replaceSelectedNode(selected, remoteTree) {
-  if (selected.url) {
-    await chrome.bookmarks.update(selected.id, { title: remoteTree.title || "", url: remoteTree.url || selected.url });
+async function mergeBackupIntoPath(pathParts, backupTree) {
+  const roots = await chrome.bookmarks.getTree();
+  let current = roots[0];
+  const parts = [...pathParts];
+  if (parts[0] === bookmarkLabel(current)) parts.shift();
+
+  for (const part of parts.slice(0, -1)) {
+    current = await findOrCreateFolder(current, part);
+  }
+
+  const targetName = parts.at(-1) || backupTree.title || "恢复的书签";
+  const target = findMatchingChild(current, backupTree, targetName);
+  if (target) {
+    await mergeBookmarkNode(target, backupTree);
     return;
   }
-  for (const child of selected.children || []) await chrome.bookmarks.removeTree(child.id);
-  for (const child of remoteTree.children || []) await createBookmarkNode(selected.id, child);
+  await createBookmarkNode(current.id, { ...backupTree, title: targetName });
+}
+
+async function findOrCreateFolder(parent, title) {
+  const existing = (parent.children ?? []).find((child) => !child.url && child.title === title);
+  if (existing) return existing;
+  const created = await chrome.bookmarks.create({ parentId: parent.id, title });
+  return { ...created, children: [] };
+}
+
+function findMatchingChild(parent, node, title = node.title || "") {
+  return (parent.children ?? []).find((child) => {
+    if (node.type === "bookmark" || node.url) return child.url === node.url && child.title === title;
+    return !child.url && child.title === title;
+  });
+}
+
+async function mergeBookmarkNode(localNode, backupNode) {
+  if (backupNode.type === "bookmark" || backupNode.url) return;
+  const [freshLocal] = await chrome.bookmarks.getSubTree(localNode.id);
+  for (const backupChild of backupNode.children ?? []) {
+    const matching = findMatchingChild(freshLocal, backupChild);
+    if (matching) await mergeBookmarkNode(matching, backupChild);
+    else await createBookmarkNode(localNode.id, backupChild);
+  }
 }
 
 async function createBookmarkNode(parentId, node) {
@@ -342,6 +497,10 @@ function stableIdFor(node) {
 
 function currentToken() {
   return config.tokens.find((item) => item.name === config.selectedTokenName)?.token ?? "";
+}
+
+function currentDeviceName() {
+  return config.tokens.find((item) => item.name === config.selectedTokenName)?.deviceName || defaultDeviceName();
 }
 
 function selectedRadioValue(inputs, fallback) {
@@ -382,7 +541,8 @@ function setBusy(isBusy) {
   els.startPairingButton.disabled = isBusy;
   els.createAccountButton.disabled = isBusy;
   els.finishPairingButton.disabled = isBusy;
-  els.syncButton.disabled = isBusy;
+  els.refreshBackupsButton.disabled = isBusy;
+  els.actionButton.disabled = isBusy;
 }
 
 function setResult(message, ok) {

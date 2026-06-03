@@ -79,6 +79,50 @@ test("api token mode pairs devices into the same account", async () => {
     });
     assert.equal(reusedPairing.status, 401);
 
+    const backupTree = {
+      stableId: "root",
+      type: "folder",
+      title: "Shared",
+      children: [
+        {
+          stableId: "example",
+          type: "bookmark",
+          title: "Example",
+          url: "https://example.com",
+          children: []
+        }
+      ]
+    };
+    const createBackup = await fetchJson(`${baseUrl}/api/backups`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${firstDeviceToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        device_name: "Home Chrome",
+        bookmark_path: "Chrome 书签 / 书签栏 / Shared",
+        bookmark_path_parts: ["Chrome 书签", "书签栏", "Shared"],
+        tree: backupTree
+      })
+    });
+    assert.equal(createBackup.status, 201);
+    assert.match(createBackup.body.backup.name, /Home Chrome - Chrome 书签 \/ 书签栏 \/ Shared$/);
+
+    const backups = await fetchJson(`${baseUrl}/api/backups`, {
+      headers: { "Authorization": `Bearer ${secondDeviceToken}` }
+    });
+    assert.equal(backups.status, 200);
+    assert.equal(backups.body.backups.length, 1);
+    assert.equal(backups.body.backups[0].tree, undefined);
+
+    const backup = await fetchJson(`${baseUrl}/api/backups/${createBackup.body.backup.id}`, {
+      headers: { "Authorization": `Bearer ${secondDeviceToken}` }
+    });
+    assert.equal(backup.status, 200);
+    assert.equal(backup.body.tree.children[0].url, "https://example.com");
+    assert.deepEqual(backup.body.backup.bookmarkPathParts, ["Chrome 书签", "书签栏", "Shared"]);
+
     const sync = await fetchJson(`${baseUrl}/api/sync/apply`, {
       method: "POST",
       headers: {
@@ -128,6 +172,7 @@ test("api token mode pairs devices into the same account", async () => {
 
     const storedData = await readFile(join(dataDir, "store.json"), "utf8");
     assert.match(storedData, /Personal Bookmarks/);
+    assert.match(storedData, /https:\/\/example\.com/);
     assert.doesNotMatch(storedData, new RegExp(firstDeviceToken));
     assert.doesNotMatch(storedData, new RegExp(secondDeviceToken));
     assert.doesNotMatch(storedData, new RegExp(pairing.body.code));
