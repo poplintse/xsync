@@ -49,8 +49,10 @@ The full device authorization flow remains available by setting
 4. Open the xsync extension options page.
 5. The production server URL defaults to `https://xunit.cc/xsync-lite/`. Use
    `http://127.0.0.1:8792/xsync-lite/` for local development.
-6. Generate and name a token in the extension, then use the same token on each
-   extension that should sync together.
+6. Choose an existing token name and enter its token, or generate and name a
+   new token. The server lists token names but never returns raw tokens.
+7. Select one bookmark folder or bookmark. Its full bookmark path becomes the
+   remote collection name.
 
 ## Install Native Messaging Host
 

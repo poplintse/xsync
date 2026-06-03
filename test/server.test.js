@@ -33,6 +33,10 @@ test("api token mode uses the token as the account identifier", async () => {
     assert.equal(nameAccount.status, 200);
     assert.equal(nameAccount.body.account.tokenName, "Personal Bookmarks");
 
+    const tokenNames = await fetchJson(`${baseUrl}/api/token-names`);
+    assert.equal(tokenNames.status, 200);
+    assert.deepEqual(tokenNames.body.token_names, ["Personal Bookmarks"]);
+
     const account = await fetchJson(`${baseUrl}/api/account`, {
       headers: { "Authorization": `Bearer ${sharedToken}` }
     });
@@ -57,6 +61,28 @@ test("api token mode uses the token as the account identifier", async () => {
       })
     });
     assert.equal(sync.status, 200);
+    assert.equal(sync.body.collection.id, 1);
+
+    const repeatedSync = await fetchJson(`${baseUrl}/api/sync/apply`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${sharedToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        mode: "local_over_server",
+        collection_name: "Shared",
+        local_tree: {
+          stableId: "root",
+          type: "folder",
+          title: "Shared",
+          children: []
+        }
+      })
+    });
+    assert.equal(repeatedSync.status, 200);
+    assert.equal(repeatedSync.body.collection.id, 1);
+    assert.equal(repeatedSync.body.collection.revision, 2);
 
     const sameAccountCollections = await fetchJson(`${baseUrl}/api/collections`, {
       headers: { "Authorization": `Bearer ${sharedToken}` }
@@ -69,6 +95,17 @@ test("api token mode uses the token as the account identifier", async () => {
     });
     assert.equal(otherAccountCollections.status, 200);
     assert.equal(otherAccountCollections.body.collections.length, 0);
+
+    const duplicateName = await fetchJson(`${baseUrl}/api/account/token-name`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${otherToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ token_name: "Personal Bookmarks" })
+    });
+    assert.equal(duplicateName.status, 409);
+    assert.equal(duplicateName.body.error, "token_name_exists");
 
     const storedData = await readFile(join(dataDir, "store.json"), "utf8");
     assert.match(storedData, /Personal Bookmarks/);

@@ -96,6 +96,14 @@ async function handleRequest(req, res) {
     return refreshDeviceToken(res, body);
   }
 
+  if (config.authMode === "api_token" && req.method === "GET" && routePath === "/api/token-names") {
+    const tokenNames = store.users
+      .map((user) => user.tokenName)
+      .filter(Boolean)
+      .sort((left, right) => left.localeCompare(right));
+    return sendJson(res, 200, { token_names: tokenNames });
+  }
+
   if (routePath.startsWith("/api/")) {
     const auth = authenticateApi(req);
     if (!auth.ok) return sendJson(res, auth.status, { error: auth.error });
@@ -115,6 +123,8 @@ async function handleApiRoute(req, res, routePath, auth) {
     const tokenName = String(body.token_name ?? body.tokenName ?? "").trim();
     if (!tokenName) return sendJson(res, 400, { error: "missing_token_name" });
     if (tokenName.length > 80) return sendJson(res, 400, { error: "token_name_too_long" });
+    const existing = store.users.find((user) => user.id !== auth.user.id && user.tokenName === tokenName);
+    if (existing) return sendJson(res, 409, { error: "token_name_exists" });
     auth.user.tokenName = tokenName;
     auth.user.displayName = tokenName;
     auth.user.updatedAt = new Date().toISOString();
@@ -275,7 +285,7 @@ async function refreshDeviceToken(res, body) {
 
 function buildSyncPreview(userId, body) {
   const mode = normalizeSyncMode(body.mode);
-  const collection = findUserCollection(userId, body.collection_id ?? body.collectionId);
+  const collection = findUserCollection(userId, body.collection_id ?? body.collectionId, body.collection_name ?? body.collectionName);
   const localTree = body.local_tree ?? body.localTree ?? null;
   const remoteTree = collection?.tree ?? null;
   return {
@@ -293,12 +303,13 @@ async function applySync(auth, body) {
     return { status: 400, body: { error: "missing_local_tree" } };
   }
 
-  let collection = findUserCollection(auth.user.id, body.collection_id ?? body.collectionId);
+  const collectionName = String(body.collection_name ?? body.collectionName ?? localTree.title ?? "Bookmarks");
+  let collection = findUserCollection(auth.user.id, body.collection_id ?? body.collectionId, collectionName);
   if (!collection) {
     collection = {
       id: nextId("collection"),
       userId: auth.user.id,
-      name: String(body.collection_name ?? body.collectionName ?? localTree.title ?? "Bookmarks"),
+      name: collectionName,
       rootKey: String(localTree.stableId ?? localTree.id ?? "root"),
       revision: 0,
       tree: null,
@@ -588,9 +599,14 @@ function upsertUser(input) {
   return user;
 }
 
-function findUserCollection(userId, id) {
+function findUserCollection(userId, id, name) {
   const collectionId = Number(id);
-  return store.collections.find((item) => item.userId === userId && item.id === collectionId);
+  if (Number.isFinite(collectionId) && collectionId > 0) {
+    return store.collections.find((item) => item.userId === userId && item.id === collectionId);
+  }
+  const collectionName = String(name ?? "").trim();
+  if (!collectionName) return undefined;
+  return store.collections.find((item) => item.userId === userId && item.name === collectionName);
 }
 
 function withoutTree(collection) {

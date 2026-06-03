@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>xsync</title>
+  <title>xsync lite</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -21,37 +21,44 @@
         <input id="serverUrlInput" type="url" autocomplete="off">
       </label>
 
-      <label>
-        当前 Token
-        <select id="tokenSelect"></select>
-      </label>
-
-      <div class="token-editor">
-        <label>
-          Token 名称
-          <input id="tokenNameInput" type="text" maxlength="80" autocomplete="off" placeholder="例如：个人书签">
+      <fieldset class="token-mode">
+        <legend>Token</legend>
+        <label class="radio-option">
+          <input type="radio" name="tokenMode" value="existing">
+          使用已有 Token
         </label>
+        <label class="radio-option">
+          <input type="radio" name="tokenMode" value="new">
+          生成新 Token
+        </label>
+      </fieldset>
 
+      <div id="existingTokenPanel" class="token-editor">
+        <label>
+          已保存的 Token 名称
+          <select id="existingTokenNameSelect"></select>
+        </label>
         <label>
           Token
-          <input id="tokenValueInput" type="password" autocomplete="off" placeholder="生成新的或填写已有 Token">
+          <input id="existingTokenValueInput" type="password" autocomplete="off" placeholder="输入该名称对应的 Token">
         </label>
-
         <div class="inline-actions">
-          <button id="generateTokenButton" type="button">生成新 Token</button>
-          <button id="saveTokenButton" type="button">保存 Token</button>
+          <button id="refreshTokenNamesButton" type="button">刷新名称列表</button>
+          <button id="useExistingTokenButton" type="button">使用此 Token</button>
         </div>
       </div>
 
-      <label>
-        远端集合 ID
-        <input id="collectionIdInput" type="number" min="1" placeholder="留空则创建新集合">
-      </label>
-
-      <label>
-        远端集合名称
-        <input id="collectionNameInput" type="text" placeholder="例如：Bookmarks Bar">
-      </label>
+      <div id="newTokenPanel" class="token-editor" hidden>
+        <label>
+          Token 名称
+          <input id="newTokenNameInput" type="text" maxlength="80" autocomplete="off" placeholder="例如：个人书签">
+        </label>
+        <button id="generateTokenButton" type="button">生成新 Token 并保存</button>
+        <label id="generatedTokenField" class="generated-token-field" hidden>
+          新 Token，请妥善保存
+          <input id="generatedTokenOutput" type="text" readonly>
+        </label>
+      </div>
 
       <fieldset>
         <legend>同步方式</legend>
@@ -72,7 +79,10 @@
 
     <section class="panel bookmark-panel">
       <div class="panel-title">
-        <h2>本地书签目录</h2>
+        <div>
+          <h2>本地书签目录</h2>
+          <p class="hint">只能选择一个目录或具体书签；选择目录会包含其全部子目录。</p>
+        </div>
         <button id="reloadBookmarksButton" type="button">刷新</button>
       </div>
       <div id="bookmarkTree" class="tree"></div>
@@ -80,10 +90,9 @@
 
     <section class="panel">
       <div class="actions">
-        <button id="previewButton" type="button">预览变更</button>
         <button id="syncButton" type="button" class="primary">立即同步</button>
       </div>
-      <pre id="resultBox"></pre>
+      <div id="resultBox" class="result-box">尚未同步。</div>
     </section>
   </main>
 

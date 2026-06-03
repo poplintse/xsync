@@ -2,9 +2,7 @@ const defaultConfig = {
   serverUrl: "https://xunit.cc/xsync-lite/",
   tokens: [],
   selectedTokenName: "",
-  accessToken: "",
-  collectionId: "",
-  collectionName: "",
+  tokenMode: "existing",
   mode: "merge",
   selectedBookmarkId: ""
 };
@@ -12,243 +10,284 @@ const defaultConfig = {
 const els = {
   statusText: document.getElementById("statusText"),
   serverUrlInput: document.getElementById("serverUrlInput"),
-  tokenSelect: document.getElementById("tokenSelect"),
-  tokenNameInput: document.getElementById("tokenNameInput"),
-  tokenValueInput: document.getElementById("tokenValueInput"),
+  tokenModeInputs: [...document.querySelectorAll('input[name="tokenMode"]')],
+  existingTokenPanel: document.getElementById("existingTokenPanel"),
+  existingTokenNameSelect: document.getElementById("existingTokenNameSelect"),
+  existingTokenValueInput: document.getElementById("existingTokenValueInput"),
+  refreshTokenNamesButton: document.getElementById("refreshTokenNamesButton"),
+  useExistingTokenButton: document.getElementById("useExistingTokenButton"),
+  newTokenPanel: document.getElementById("newTokenPanel"),
+  newTokenNameInput: document.getElementById("newTokenNameInput"),
   generateTokenButton: document.getElementById("generateTokenButton"),
-  saveTokenButton: document.getElementById("saveTokenButton"),
-  collectionIdInput: document.getElementById("collectionIdInput"),
-  collectionNameInput: document.getElementById("collectionNameInput"),
+  generatedTokenField: document.getElementById("generatedTokenField"),
+  generatedTokenOutput: document.getElementById("generatedTokenOutput"),
   modeInputs: [...document.querySelectorAll('input[name="mode"]')],
   reloadBookmarksButton: document.getElementById("reloadBookmarksButton"),
   bookmarkTree: document.getElementById("bookmarkTree"),
-  previewButton: document.getElementById("previewButton"),
   syncButton: document.getElementById("syncButton"),
   resultBox: document.getElementById("resultBox")
 };
 
 let config = { ...defaultConfig };
 let bookmarkRoots = [];
+let bookmarkById = new Map();
+let remoteTokenNames = [];
 
 init();
 
 async function init() {
   config = { ...defaultConfig, ...(await chrome.storage.local.get(defaultConfig)) };
-  migrateLegacyToken();
   bindConfig();
   await chrome.storage.local.set(config);
-  await loadBookmarks();
+  await Promise.all([loadTokenNames(), loadBookmarks()]);
   renderStatus();
-}
-
-function migrateLegacyToken() {
-  if (!config.tokens.length && config.accessToken) {
-    config.tokens = [{ name: "default", token: config.accessToken }];
-    config.selectedTokenName = "default";
-  }
-  delete config.accessToken;
 }
 
 function bindConfig() {
   els.serverUrlInput.value = config.serverUrl;
-  els.collectionIdInput.value = config.collectionId;
-  els.collectionNameInput.value = config.collectionName;
-  renderTokenOptions();
+  renderTokenMode();
   renderMode();
 
-  for (const input of [els.serverUrlInput, els.collectionIdInput, els.collectionNameInput, ...els.modeInputs]) {
-    input.addEventListener("change", saveConfigFromForm);
-  }
-
-  els.tokenSelect.addEventListener("change", selectToken);
-  els.generateTokenButton.addEventListener("click", generateToken);
-  els.saveTokenButton.addEventListener("click", saveToken);
+  els.serverUrlInput.addEventListener("change", async () => {
+    await saveConfigFromForm();
+    await loadTokenNames();
+  });
+  for (const input of els.tokenModeInputs) input.addEventListener("change", changeTokenMode);
+  for (const input of els.modeInputs) input.addEventListener("change", saveConfigFromForm);
+  els.refreshTokenNamesButton.addEventListener("click", loadTokenNames);
+  els.useExistingTokenButton.addEventListener("click", useExistingToken);
+  els.generateTokenButton.addEventListener("click", generateAndSaveToken);
   els.reloadBookmarksButton.addEventListener("click", loadBookmarks);
-  els.previewButton.addEventListener("click", () => runSync("preview"));
-  els.syncButton.addEventListener("click", () => runSync("apply"));
+  els.syncButton.addEventListener("click", runSync);
 }
 
-function renderTokenOptions() {
-  els.tokenSelect.textContent = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = "请选择 Token";
-  els.tokenSelect.appendChild(placeholder);
-
-  for (const item of config.tokens) {
-    const option = document.createElement("option");
-    option.value = item.name;
-    option.textContent = item.name;
-    els.tokenSelect.appendChild(option);
-  }
-
-  els.tokenSelect.value = config.selectedTokenName;
+function renderTokenMode() {
+  for (const input of els.tokenModeInputs) input.checked = input.value === config.tokenMode;
+  els.existingTokenPanel.hidden = config.tokenMode !== "existing";
+  els.newTokenPanel.hidden = config.tokenMode !== "new";
 }
 
 function renderMode() {
   for (const input of els.modeInputs) input.checked = input.value === config.mode;
 }
 
+async function changeTokenMode() {
+  config.tokenMode = selectedRadioValue(els.tokenModeInputs, "existing");
+  await chrome.storage.local.set(config);
+  renderTokenMode();
+}
+
 async function saveConfigFromForm() {
   config = {
     ...config,
     serverUrl: normalizeServerUrl(els.serverUrlInput.value),
-    collectionId: els.collectionIdInput.value.trim(),
-    collectionName: els.collectionNameInput.value.trim(),
-    mode: selectedMode()
+    mode: selectedRadioValue(els.modeInputs, "merge")
   };
   els.serverUrlInput.value = config.serverUrl;
   await chrome.storage.local.set(config);
   renderStatus();
 }
 
-async function selectToken() {
-  config.selectedTokenName = els.tokenSelect.value;
-  config.collectionId = "";
-  els.collectionIdInput.value = "";
-  await chrome.storage.local.set(config);
-  renderStatus();
-}
-
-function generateToken() {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  els.tokenValueInput.value = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  setResult("已生成新的随机 Token，请填写名称后保存。");
-}
-
-async function saveToken() {
+async function loadTokenNames() {
   await saveConfigFromForm();
-  const name = els.tokenNameInput.value.trim();
-  const token = els.tokenValueInput.value.trim();
-  if (!name) return setResult("请填写 Token 名称。");
-  if (!token) return setResult("请生成或填写 Token。");
+  try {
+    const response = await publicFetch("/api/token-names");
+    remoteTokenNames = response.token_names ?? [];
+    renderTokenNames();
+  } catch (error) {
+    remoteTokenNames = [];
+    renderTokenNames();
+    setResult(`读取 Token 名称失败：${error.message}`, false);
+  }
+}
+
+function renderTokenNames() {
+  els.existingTokenNameSelect.textContent = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = remoteTokenNames.length ? "请选择 Token 名称" : "服务器上暂无 Token";
+  els.existingTokenNameSelect.appendChild(placeholder);
+
+  for (const name of remoteTokenNames) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    els.existingTokenNameSelect.appendChild(option);
+  }
+  if (remoteTokenNames.includes(config.selectedTokenName)) els.existingTokenNameSelect.value = config.selectedTokenName;
+}
+
+async function useExistingToken() {
+  await saveConfigFromForm();
+  const name = els.existingTokenNameSelect.value;
+  const token = els.existingTokenValueInput.value.trim() || localToken(name);
+  if (!name) return setResult("请选择服务器上已有的 Token 名称。", false);
+  if (!token) return setResult("请输入该名称对应的 Token。", false);
 
   setBusy(true);
   try {
-    const response = await apiFetch("/api/account/token-name", { token_name: name }, token);
-    config.tokens = config.tokens.filter((item) => item.name !== name && item.token !== token);
-    config.tokens.push({ name, token });
-    config.selectedTokenName = name;
-    config.collectionId = "";
-    els.collectionIdInput.value = "";
-    els.tokenNameInput.value = "";
-    els.tokenValueInput.value = "";
-    renderTokenOptions();
-    await chrome.storage.local.set(config);
-    setResult(`Token "${response.account.tokenName}" 已保存并选中。`);
+    const response = await apiFetch("/api/account", null, token, "GET");
+    if (response.account.tokenName !== name) throw new Error("token_name_mismatch");
+    saveLocalToken(name, token);
+    els.existingTokenValueInput.value = "";
+    setResult(`已使用 Token "${name}"。`, true);
   } catch (error) {
-    setResult(`保存 Token 失败：${error.message}`);
+    setResult(`使用已有 Token 失败：${error.message}`, false);
   } finally {
     setBusy(false);
     renderStatus();
   }
 }
 
+async function generateAndSaveToken() {
+  await saveConfigFromForm();
+  const name = els.newTokenNameInput.value.trim();
+  if (!name) return setResult("请填写 Token 名称。", false);
+  const token = randomToken();
+
+  setBusy(true);
+  try {
+    const response = await apiFetch("/api/account/token-name", { token_name: name }, token);
+    saveLocalToken(response.account.tokenName, token);
+    els.generatedTokenOutput.value = token;
+    els.generatedTokenField.hidden = false;
+    els.newTokenNameInput.value = "";
+    await loadTokenNames();
+    setResult(`新 Token "${name}" 已保存并设为当前 Token。请妥善保存显示的 Token。`, true);
+  } catch (error) {
+    setResult(`生成 Token 失败：${error.message}`, false);
+  } finally {
+    setBusy(false);
+    renderStatus();
+  }
+}
+
+function saveLocalToken(name, token) {
+  config.tokens = config.tokens.filter((item) => item.name !== name && item.token !== token);
+  config.tokens.push({ name, token });
+  config.selectedTokenName = name;
+  chrome.storage.local.set(config);
+}
+
 async function loadBookmarks() {
-  setResult("正在读取 Chrome 书签...");
+  setResult("正在读取 Chrome 书签...", true);
   bookmarkRoots = await chrome.bookmarks.getTree();
+  bookmarkById = new Map();
+  for (const root of bookmarkRoots) indexBookmarkNode(root, []);
   renderBookmarkTree();
-  setResult("请选择一个书签目录。");
+  setResult("请选择一个本地书签目录或具体书签。", true);
+}
+
+function indexBookmarkNode(node, parentPath) {
+  const label = bookmarkLabel(node);
+  const path = label ? [...parentPath, label] : parentPath;
+  bookmarkById.set(node.id, { node, path });
+  for (const child of node.children ?? []) indexBookmarkNode(child, path);
 }
 
 function renderBookmarkTree() {
   els.bookmarkTree.textContent = "";
   const list = document.createElement("ul");
-  for (const root of bookmarkRoots) {
-    appendBookmarkNode(list, root);
-  }
+  for (const root of bookmarkRoots) appendBookmarkNode(list, root, false);
   els.bookmarkTree.appendChild(list);
 }
 
-function appendBookmarkNode(parent, node) {
-  if (!node.children) return;
+function appendBookmarkNode(parent, node, inheritedSelection) {
+  const selected = node.id === config.selectedBookmarkId;
+  const included = inheritedSelection || selected;
   const item = document.createElement("li");
-  const button = document.createElement("button");
-  button.type = "button";
-  button.textContent = folderLabel(node);
-  button.className = node.id === config.selectedBookmarkId ? "selected" : "";
-  button.addEventListener("click", async () => {
-    config.selectedBookmarkId = node.id;
-    if (!config.collectionName && node.title) {
-      config.collectionName = node.title;
-      els.collectionNameInput.value = node.title;
-    }
-    await chrome.storage.local.set(config);
-    renderBookmarkTree();
-    renderStatus();
-  });
-  item.appendChild(button);
+  const label = document.createElement("label");
+  label.className = `tree-option${selected ? " selected" : ""}${inheritedSelection ? " inherited" : ""}`;
 
-  const children = document.createElement("ul");
-  for (const child of node.children) appendBookmarkNode(children, child);
-  if (children.childNodes.length) item.appendChild(children);
+  const checkbox = document.createElement("input");
+  checkbox.type = "checkbox";
+  checkbox.checked = included;
+  checkbox.disabled = inheritedSelection;
+  checkbox.addEventListener("change", () => selectBookmarkNode(node.id));
+
+  const text = document.createElement("span");
+  text.textContent = bookmarkLabel(node);
+  label.append(checkbox, text);
+  item.appendChild(label);
+
+  if (node.children?.length) {
+    const children = document.createElement("ul");
+    for (const child of node.children) appendBookmarkNode(children, child, included);
+    item.appendChild(children);
+  }
   parent.appendChild(item);
 }
 
-function folderLabel(node) {
-  if (node.title) return node.title;
-  if (node.id === "0") return "Chrome 书签";
-  return "未命名目录";
+async function selectBookmarkNode(id) {
+  config.selectedBookmarkId = config.selectedBookmarkId === id ? "" : id;
+  await chrome.storage.local.set(config);
+  renderBookmarkTree();
+  renderStatus();
 }
 
-async function runSync(action) {
+function bookmarkLabel(node) {
+  if (node.title) return node.title;
+  if (node.id === "0") return "Chrome 书签";
+  return node.url || "未命名书签";
+}
+
+async function runSync() {
   await saveConfigFromForm();
-  if (!config.selectedBookmarkId) return setResult("请先选择一个本地书签目录。");
-  const token = selectedToken();
-  if (!token) return setResult("请先选择一个 Token。");
+  if (!config.selectedBookmarkId) return setResult("请先选择一个本地书签目录或具体书签。", false);
+  const token = localToken(config.selectedTokenName);
+  if (!token) return setResult("请先使用已有 Token 或生成新 Token。", false);
 
   setBusy(true);
   try {
     const [node] = await chrome.bookmarks.getSubTree(config.selectedBookmarkId);
     const localTree = normalizeBookmarkNode(node);
-    const body = {
+    const collectionName = bookmarkById.get(config.selectedBookmarkId)?.path.join(" / ") || bookmarkLabel(node);
+    const result = await apiFetch("/api/sync/apply", {
       mode: config.mode,
-      collection_id: config.collectionId ? Number(config.collectionId) : undefined,
-      collection_name: config.collectionName || localTree.title,
+      collection_name: collectionName,
       local_tree: localTree
-    };
-    const endpoint = action === "preview" ? "/api/sync/preview" : "/api/sync/apply";
-    const result = await apiFetch(endpoint, body, token);
-    if (action === "apply" && config.mode === "server_over_local" && result.tree) {
-      await replaceSelectedFolder(result.tree);
-    }
-    if (result.collection?.id && !config.collectionId) {
-      config.collectionId = String(result.collection.id);
-      els.collectionIdInput.value = config.collectionId;
-      await chrome.storage.local.set(config);
-    }
-    setResult(JSON.stringify(result, null, 2));
+    }, token);
+    if (config.mode === "server_over_local" && result.tree) await replaceSelectedNode(node, result.tree);
+    setResult(`同步成功\n远端集合：${result.collection.name}\n同步时间：${formatTime(result.collection.updatedAt)}`, true);
   } catch (error) {
-    setResult(`同步失败：${error.message}`);
+    setResult(`同步失败：${error.message}`, false);
   } finally {
     setBusy(false);
     renderStatus();
   }
 }
 
-async function apiFetch(path, body, token) {
-  const response = await fetch(`${config.serverUrl.replace(/\/+$/, "")}${path}`, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify(body)
-  });
+async function apiFetch(path, body, token, method = "POST") {
+  const options = {
+    method,
+    headers: { "Authorization": `Bearer ${token}` }
+  };
+  if (body !== null) {
+    options.headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(`${serverBaseUrl()}${path}`, options);
+  return parseResponse(response);
+}
+
+async function publicFetch(path) {
+  const response = await fetch(`${serverBaseUrl()}${path}`);
+  return parseResponse(response);
+}
+
+async function parseResponse(response) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
 }
 
-async function replaceSelectedFolder(remoteTree) {
-  const [selected] = await chrome.bookmarks.getSubTree(config.selectedBookmarkId);
-  for (const child of selected.children || []) {
-    await chrome.bookmarks.removeTree(child.id);
+async function replaceSelectedNode(selected, remoteTree) {
+  if (selected.url) {
+    await chrome.bookmarks.update(selected.id, { title: remoteTree.title || "", url: remoteTree.url || selected.url });
+    return;
   }
-  for (const child of remoteTree.children || []) {
-    await createBookmarkNode(config.selectedBookmarkId, child);
-  }
+  for (const child of selected.children || []) await chrome.bookmarks.removeTree(child.id);
+  for (const child of remoteTree.children || []) await createBookmarkNode(selected.id, child);
 }
 
 async function createBookmarkNode(parentId, node) {
@@ -258,9 +297,7 @@ async function createBookmarkNode(parentId, node) {
     url: node.type === "bookmark" ? node.url : undefined
   });
   if (node.type !== "bookmark") {
-    for (const child of node.children || []) {
-      await createBookmarkNode(created.id, child);
-    }
+    for (const child of node.children || []) await createBookmarkNode(created.id, child);
   }
   return created;
 }
@@ -285,12 +322,18 @@ function stableIdFor(node) {
   return `chrome-${Math.abs(hash)}`;
 }
 
-function selectedToken() {
-  return config.tokens.find((item) => item.name === config.selectedTokenName)?.token ?? "";
+function localToken(name) {
+  return config.tokens.find((item) => item.name === name)?.token ?? "";
 }
 
-function selectedMode() {
-  return els.modeInputs.find((input) => input.checked)?.value ?? "merge";
+function randomToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function selectedRadioValue(inputs, fallback) {
+  return inputs.find((input) => input.checked)?.value ?? fallback;
 }
 
 function normalizeServerUrl(value) {
@@ -298,21 +341,30 @@ function normalizeServerUrl(value) {
   return trimmed ? `${trimmed}/` : "";
 }
 
+function serverBaseUrl() {
+  return config.serverUrl.replace(/\/+$/, "");
+}
+
+function formatTime(value) {
+  return value ? new Date(value).toLocaleString() : new Date().toLocaleString();
+}
+
 function renderStatus() {
   const parts = [];
   parts.push(config.selectedTokenName ? `Token ${config.selectedTokenName}` : "未选择 Token");
-  if (config.selectedBookmarkId) parts.push(`已选目录 ${config.selectedBookmarkId}`);
-  if (config.collectionId) parts.push(`集合 ${config.collectionId}`);
+  const selected = bookmarkById.get(config.selectedBookmarkId);
+  if (selected) parts.push(selected.path.join(" / "));
   els.statusText.textContent = parts.join(" · ");
 }
 
 function setBusy(isBusy) {
+  els.refreshTokenNamesButton.disabled = isBusy;
+  els.useExistingTokenButton.disabled = isBusy;
   els.generateTokenButton.disabled = isBusy;
-  els.saveTokenButton.disabled = isBusy;
-  els.previewButton.disabled = isBusy;
   els.syncButton.disabled = isBusy;
 }
 
-function setResult(message) {
+function setResult(message, ok) {
   els.resultBox.textContent = message;
+  els.resultBox.className = `result-box${ok === true ? " success" : ok === false ? " error" : ""}`;
 }
