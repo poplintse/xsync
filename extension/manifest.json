@@ -3,8 +3,8 @@
   "name": "xsync",
   "version": "0.1.0",
   "description": "Self-hosted Chrome bookmark sync for xsync.",
-  "permissions": ["bookmarks", "storage", "nativeMessaging"],
-  "host_permissions": ["https://xunit.cc/xsync/*", "http://127.0.0.1:8791/xsync/*"],
+  "permissions": ["bookmarks", "storage"],
+  "host_permissions": ["https://xunit.cc/xsync-lite/*", "http://127.0.0.1:8792/xsync-lite/*"],
   "action": {
     "default_title": "xsync",
     "default_popup": "options/index.html"

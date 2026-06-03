@@ -11,7 +11,7 @@ const config = {
   port: Number(process.env.XSYNC_PORT ?? 8791),
   basePath: normalizeBasePath(process.env.XSYNC_BASE_PATH ?? "/xsync"),
   dataDir: process.env.XSYNC_DATA_DIR ?? join(__dirname, "../../.data"),
-  authMode: process.env.AUTH_MODE ?? "sso_ticket",
+  authMode: process.env.AUTH_MODE ?? "api_token",
   cookieSecure: normalizeBoolean(process.env.XSYNC_COOKIE_SECURE, false),
   cookieName: "xsync_session",
   xssoBaseUrl: trimTrailingSlash(process.env.XSSO_BASE_URL ?? "http://127.0.0.1:7000/xsso"),
@@ -47,16 +47,19 @@ async function handleRequest(req, res) {
   }
 
   if (req.method === "GET" && routePath === "/") {
+    if (config.authMode === "api_token") return sendHtml(res, renderLiteHome());
     const session = getWebSession(req);
     if (!session) return redirectToXsso(res, "/");
     return sendHtml(res, renderHome(session.user));
   }
 
   if (req.method === "GET" && routePath === "/sso/callback") {
+    if (config.authMode === "api_token") return sendJson(res, 404, { error: "not_found" });
     return handleSsoCallback(req, res, url);
   }
 
   if (req.method === "GET" && routePath === "/device/authorize") {
+    if (config.authMode === "api_token") return sendJson(res, 404, { error: "not_found" });
     const session = getWebSession(req);
     if (!session) return redirectToXsso(res, "/device/authorize");
     const callbackUrl = safeDeviceCallbackUrl(url.searchParams.get("callback_url"));
@@ -69,6 +72,7 @@ async function handleRequest(req, res) {
   }
 
   if (req.method === "POST" && routePath === "/api/device/authorize/start") {
+    if (config.authMode === "api_token") return sendJson(res, 404, { error: "not_found" });
     const session = getWebSession(req);
     if (!session) return sendJson(res, 401, { error: "unauthorized" });
     const body = await readJsonBody(req);
@@ -81,11 +85,13 @@ async function handleRequest(req, res) {
   }
 
   if (req.method === "POST" && routePath === "/api/device/authorize/finish") {
+    if (config.authMode === "api_token") return sendJson(res, 404, { error: "not_found" });
     const body = await readJsonBody(req);
     return finishDeviceAuthorization(res, body);
   }
 
   if (req.method === "POST" && routePath === "/api/device/token/refresh") {
+    if (config.authMode === "api_token") return sendJson(res, 404, { error: "not_found" });
     const body = await readJsonBody(req);
     return refreshDeviceToken(res, body);
   }
@@ -100,6 +106,22 @@ async function handleRequest(req, res) {
 }
 
 async function handleApiRoute(req, res, routePath, auth) {
+  if (config.authMode === "api_token" && req.method === "GET" && routePath === "/api/account") {
+    return sendJson(res, 200, { account: publicUser(auth.user) });
+  }
+
+  if (config.authMode === "api_token" && req.method === "POST" && routePath === "/api/account/token-name") {
+    const body = await readJsonBody(req);
+    const tokenName = String(body.token_name ?? body.tokenName ?? "").trim();
+    if (!tokenName) return sendJson(res, 400, { error: "missing_token_name" });
+    if (tokenName.length > 80) return sendJson(res, 400, { error: "token_name_too_long" });
+    auth.user.tokenName = tokenName;
+    auth.user.displayName = tokenName;
+    auth.user.updatedAt = new Date().toISOString();
+    await saveStore();
+    return sendJson(res, 200, { account: publicUser(auth.user) });
+  }
+
   if (req.method === "GET" && routePath === "/api/collections") {
     const collections = store.collections
       .filter((collection) => collection.userId === auth.user.id)
@@ -368,12 +390,54 @@ function flattenTree(tree) {
 function authenticateApi(req) {
   const token = getBearerToken(req);
   if (!token) return { ok: false, status: 401, error: "missing_token" };
+  if (config.authMode === "api_token") return authenticateApiToken(token);
+
   const tokenHash = hashToken(token);
   const device = store.devices.find((item) => !item.revokedAt && safeEqual(item.accessTokenHash, tokenHash));
   if (!device) return { ok: false, status: 401, error: "invalid_token" };
   const user = store.users.find((item) => item.id === device.userId);
   if (!user) return { ok: false, status: 401, error: "invalid_user" };
   device.lastSeenAt = new Date().toISOString();
+  saveStore();
+  return { ok: true, user, device };
+}
+
+function authenticateApiToken(token) {
+  const tokenHash = hashToken(token);
+  let user = store.users.find((item) => item.apiTokenHash && safeEqual(item.apiTokenHash, tokenHash));
+  let device = store.devices.find((item) => item.authType === "api_token" && !item.revokedAt && safeEqual(item.accessTokenHash, tokenHash));
+
+  if (!user) {
+    const accountName = `lite-${tokenHash.slice(0, 12)}`;
+    user = {
+      id: nextId("user"),
+      apiTokenHash: tokenHash,
+      username: accountName,
+      displayName: accountName,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    store.users.push(user);
+  }
+
+  if (!device) {
+    device = {
+      id: nextId("device"),
+      userId: user.id,
+      authType: "api_token",
+      name: "Lite API Token",
+      platform: "api_token",
+      accessTokenHash: tokenHash,
+      refreshTokenHash: null,
+      revokedAt: null,
+      lastSeenAt: new Date().toISOString(),
+      createdAt: new Date().toISOString()
+    };
+    store.devices.push(device);
+  } else {
+    device.lastSeenAt = new Date().toISOString();
+  }
+
   saveStore();
   return { ok: true, user, device };
 }
@@ -428,6 +492,29 @@ code{background:#eef1ed;padding:2px 5px;border-radius:4px}
   <section>
     <p>已通过 xsso 登录：<strong>${escapeHtml(user.displayName || user.username)}</strong></p>
     <p>Chrome 扩展和托盘 App 可通过 <code>${config.basePath}/api/device/authorize/start</code> 完成设备授权。</p>
+  </section>
+</main>
+</html>`;
+}
+
+function renderLiteHome() {
+  return `<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>xsync lite</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;background:#f7f7f5;color:#1f2933}
+main{max-width:880px;margin:48px auto;padding:0 24px}
+section{border:1px solid #d8ddd5;background:#fff;border-radius:8px;padding:24px}
+code{background:#eef1ed;padding:2px 5px;border-radius:4px}
+</style>
+<main>
+  <h1>xsync lite</h1>
+  <section>
+    <p>服务端已启用 API token 账户模式。</p>
+    <p>在每个客户端配置相同的长期随机 token，即会同步到同一个账户。</p>
+    <p>API 请求使用 <code>Authorization: Bearer &lt;token&gt;</code>，服务端只保存 token 哈希。</p>
   </section>
 </main>
 </html>`;
@@ -515,7 +602,8 @@ function publicUser(user) {
   return {
     id: user.id,
     username: user.username,
-    displayName: user.displayName
+    displayName: user.displayName,
+    tokenName: user.tokenName ?? null
   };
 }
 

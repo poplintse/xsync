@@ -1,8 +1,8 @@
 const defaultConfig = {
-  serverUrl: "https://xunit.cc/xsync",
+  serverUrl: "https://xunit.cc/xsync-lite/",
+  tokens: [],
+  selectedTokenName: "",
   accessToken: "",
-  refreshToken: "",
-  deviceCode: "",
   collectionId: "",
   collectionName: "",
   mode: "merge",
@@ -11,15 +11,15 @@ const defaultConfig = {
 
 const els = {
   statusText: document.getElementById("statusText"),
-  authorizeButton: document.getElementById("authorizeButton"),
-  nativeTokenButton: document.getElementById("nativeTokenButton"),
-  finishAuthorizationButton: document.getElementById("finishAuthorizationButton"),
   serverUrlInput: document.getElementById("serverUrlInput"),
-  accessTokenInput: document.getElementById("accessTokenInput"),
-  deviceCodeInput: document.getElementById("deviceCodeInput"),
+  tokenSelect: document.getElementById("tokenSelect"),
+  tokenNameInput: document.getElementById("tokenNameInput"),
+  tokenValueInput: document.getElementById("tokenValueInput"),
+  generateTokenButton: document.getElementById("generateTokenButton"),
+  saveTokenButton: document.getElementById("saveTokenButton"),
   collectionIdInput: document.getElementById("collectionIdInput"),
   collectionNameInput: document.getElementById("collectionNameInput"),
-  modeSelect: document.getElementById("modeSelect"),
+  modeInputs: [...document.querySelectorAll('input[name="mode"]')],
   reloadBookmarksButton: document.getElementById("reloadBookmarksButton"),
   bookmarkTree: document.getElementById("bookmarkTree"),
   previewButton: document.getElementById("previewButton"),
@@ -34,43 +34,115 @@ init();
 
 async function init() {
   config = { ...defaultConfig, ...(await chrome.storage.local.get(defaultConfig)) };
+  migrateLegacyToken();
   bindConfig();
+  await chrome.storage.local.set(config);
   await loadBookmarks();
   renderStatus();
 }
 
+function migrateLegacyToken() {
+  if (!config.tokens.length && config.accessToken) {
+    config.tokens = [{ name: "default", token: config.accessToken }];
+    config.selectedTokenName = "default";
+  }
+  delete config.accessToken;
+}
+
 function bindConfig() {
   els.serverUrlInput.value = config.serverUrl;
-  els.accessTokenInput.value = config.accessToken;
-  els.deviceCodeInput.value = config.deviceCode;
   els.collectionIdInput.value = config.collectionId;
   els.collectionNameInput.value = config.collectionName;
-  els.modeSelect.value = config.mode;
+  renderTokenOptions();
+  renderMode();
 
-  for (const input of [els.serverUrlInput, els.accessTokenInput, els.deviceCodeInput, els.collectionIdInput, els.collectionNameInput, els.modeSelect]) {
+  for (const input of [els.serverUrlInput, els.collectionIdInput, els.collectionNameInput, ...els.modeInputs]) {
     input.addEventListener("change", saveConfigFromForm);
   }
 
+  els.tokenSelect.addEventListener("change", selectToken);
+  els.generateTokenButton.addEventListener("click", generateToken);
+  els.saveTokenButton.addEventListener("click", saveToken);
   els.reloadBookmarksButton.addEventListener("click", loadBookmarks);
   els.previewButton.addEventListener("click", () => runSync("preview"));
   els.syncButton.addEventListener("click", () => runSync("apply"));
-  els.authorizeButton.addEventListener("click", openAuthorizationPage);
-  els.nativeTokenButton.addEventListener("click", refreshTokenFromNativeHost);
-  els.finishAuthorizationButton.addEventListener("click", finishAuthorizationWithCode);
+}
+
+function renderTokenOptions() {
+  els.tokenSelect.textContent = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "请选择 Token";
+  els.tokenSelect.appendChild(placeholder);
+
+  for (const item of config.tokens) {
+    const option = document.createElement("option");
+    option.value = item.name;
+    option.textContent = item.name;
+    els.tokenSelect.appendChild(option);
+  }
+
+  els.tokenSelect.value = config.selectedTokenName;
+}
+
+function renderMode() {
+  for (const input of els.modeInputs) input.checked = input.value === config.mode;
 }
 
 async function saveConfigFromForm() {
   config = {
     ...config,
-    serverUrl: els.serverUrlInput.value.trim().replace(/\/+$/, ""),
-    accessToken: els.accessTokenInput.value.trim(),
-    deviceCode: els.deviceCodeInput.value.trim(),
+    serverUrl: normalizeServerUrl(els.serverUrlInput.value),
     collectionId: els.collectionIdInput.value.trim(),
     collectionName: els.collectionNameInput.value.trim(),
-    mode: els.modeSelect.value
+    mode: selectedMode()
   };
+  els.serverUrlInput.value = config.serverUrl;
   await chrome.storage.local.set(config);
   renderStatus();
+}
+
+async function selectToken() {
+  config.selectedTokenName = els.tokenSelect.value;
+  config.collectionId = "";
+  els.collectionIdInput.value = "";
+  await chrome.storage.local.set(config);
+  renderStatus();
+}
+
+function generateToken() {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  els.tokenValueInput.value = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  setResult("已生成新的随机 Token，请填写名称后保存。");
+}
+
+async function saveToken() {
+  await saveConfigFromForm();
+  const name = els.tokenNameInput.value.trim();
+  const token = els.tokenValueInput.value.trim();
+  if (!name) return setResult("请填写 Token 名称。");
+  if (!token) return setResult("请生成或填写 Token。");
+
+  setBusy(true);
+  try {
+    const response = await apiFetch("/api/account/token-name", { token_name: name }, token);
+    config.tokens = config.tokens.filter((item) => item.name !== name && item.token !== token);
+    config.tokens.push({ name, token });
+    config.selectedTokenName = name;
+    config.collectionId = "";
+    els.collectionIdInput.value = "";
+    els.tokenNameInput.value = "";
+    els.tokenValueInput.value = "";
+    renderTokenOptions();
+    await chrome.storage.local.set(config);
+    setResult(`Token "${response.account.tokenName}" 已保存并选中。`);
+  } catch (error) {
+    setResult(`保存 Token 失败：${error.message}`);
+  } finally {
+    setBusy(false);
+    renderStatus();
+  }
 }
 
 async function loadBookmarks() {
@@ -123,8 +195,8 @@ function folderLabel(node) {
 async function runSync(action) {
   await saveConfigFromForm();
   if (!config.selectedBookmarkId) return setResult("请先选择一个本地书签目录。");
-  const accessToken = await resolveAccessToken();
-  if (!accessToken) return setResult("请先完成设备授权，或临时粘贴 Access Token。");
+  const token = selectedToken();
+  if (!token) return setResult("请先选择一个 Token。");
 
   setBusy(true);
   try {
@@ -137,7 +209,7 @@ async function runSync(action) {
       local_tree: localTree
     };
     const endpoint = action === "preview" ? "/api/sync/preview" : "/api/sync/apply";
-    const result = await apiFetch(endpoint, body, accessToken);
+    const result = await apiFetch(endpoint, body, token);
     if (action === "apply" && config.mode === "server_over_local" && result.tree) {
       await replaceSelectedFolder(result.tree);
     }
@@ -155,11 +227,11 @@ async function runSync(action) {
   }
 }
 
-async function apiFetch(path, body, accessToken) {
-  const response = await fetch(`${config.serverUrl}${path}`, {
+async function apiFetch(path, body, token) {
+  const response = await fetch(`${config.serverUrl.replace(/\/+$/, "")}${path}`, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${accessToken}`,
+      "Authorization": `Bearer ${token}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(body)
@@ -167,35 +239,6 @@ async function apiFetch(path, body, accessToken) {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
   return data;
-}
-
-async function finishAuthorizationWithCode() {
-  await saveConfigFromForm();
-  if (!config.deviceCode) return setResult("请先填写一次性授权码。");
-
-  setBusy(true);
-  try {
-    const response = await fetch(`${config.serverUrl}/api/device/authorize/finish`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code: config.deviceCode })
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
-
-    config.accessToken = data.access_token || "";
-    config.refreshToken = data.refresh_token || "";
-    config.deviceCode = "";
-    els.accessTokenInput.value = config.accessToken;
-    els.deviceCodeInput.value = "";
-    await chrome.storage.local.set(config);
-    setResult("授权完成，token 已保存到扩展本地配置。托盘 App 接入后会改由系统钥匙串保存。");
-  } catch (error) {
-    setResult(`授权失败：${error.message}`);
-  } finally {
-    setBusy(false);
-    renderStatus();
-  }
 }
 
 async function replaceSelectedFolder(remoteTree) {
@@ -242,91 +285,30 @@ function stableIdFor(node) {
   return `chrome-${Math.abs(hash)}`;
 }
 
-async function openAuthorizationPage() {
-  const serverUrl = els.serverUrlInput.value.trim().replace(/\/+$/, "");
-  try {
-    const response = await requestNativeMessage({
-      type: "startAuthorization",
-      serverUrl,
-      deviceName: "Chrome Extension",
-      platform: "chrome"
-    });
-    if (response.ok) {
-      setResult("已交给托盘 App 处理设备授权。");
-      return;
-    }
-  } catch {
-    // Browser fallback keeps first-run development usable without the tray app.
-  }
-  const url = `${serverUrl}/device/authorize?device_name=${encodeURIComponent("Chrome Extension")}&platform=chrome`;
-  chrome.tabs.create({ url });
+function selectedToken() {
+  return config.tokens.find((item) => item.name === config.selectedTokenName)?.token ?? "";
 }
 
-async function refreshTokenFromNativeHost() {
-  setBusy(true);
-  try {
-    const accessToken = await requestNativeAccessToken();
-    config.accessToken = accessToken;
-    els.accessTokenInput.value = accessToken;
-    await chrome.storage.local.set(config);
-    setResult("已从托盘 App 获取 token。");
-  } catch (error) {
-    setResult(`托盘 App 暂不可用：${error.message}`);
-  } finally {
-    setBusy(false);
-    renderStatus();
-  }
+function selectedMode() {
+  return els.modeInputs.find((input) => input.checked)?.value ?? "merge";
 }
 
-async function resolveAccessToken() {
-  try {
-    const accessToken = await requestNativeAccessToken();
-    if (accessToken) return accessToken;
-  } catch {
-    // Manual token is the development fallback until the tray app is installed.
-  }
-  return config.accessToken;
-}
-
-function requestNativeAccessToken() {
-  return requestNativeMessage({ type: "getAccessToken", serverUrl: config.serverUrl }).then((response) => {
-    if (!response.ok) throw new Error(response.error || "native_host_error");
-    if (!response.accessToken) throw new Error("missing_access_token");
-    return response.accessToken;
-  });
-}
-
-function requestNativeMessage(message) {
-  return new Promise((resolve, reject) => {
-    let port;
-    try {
-      port = chrome.runtime.connectNative("com.xunit.xsync");
-    } catch (error) {
-      reject(error);
-      return;
-    }
-
-    port.onMessage.addListener((response) => {
-      resolve(response);
-      port.disconnect();
-    });
-    port.onDisconnect.addListener(() => {
-      const error = chrome.runtime.lastError;
-      if (error) reject(new Error(error.message));
-    });
-    port.postMessage(message);
-  });
+function normalizeServerUrl(value) {
+  const trimmed = value.trim().replace(/\/+$/, "");
+  return trimmed ? `${trimmed}/` : "";
 }
 
 function renderStatus() {
   const parts = [];
-  parts.push(config.accessToken ? "已配置 token" : "未授权");
+  parts.push(config.selectedTokenName ? `Token ${config.selectedTokenName}` : "未选择 Token");
   if (config.selectedBookmarkId) parts.push(`已选目录 ${config.selectedBookmarkId}`);
   if (config.collectionId) parts.push(`集合 ${config.collectionId}`);
   els.statusText.textContent = parts.join(" · ");
 }
 
 function setBusy(isBusy) {
+  els.generateTokenButton.disabled = isBusy;
+  els.saveTokenButton.disabled = isBusy;
   els.previewButton.disabled = isBusy;
   els.syncButton.disabled = isBusy;
 }

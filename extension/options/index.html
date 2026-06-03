@@ -10,10 +10,9 @@
   <main class="shell">
     <header class="header">
       <div>
-        <h1>xsync</h1>
+        <h1>xsync lite</h1>
         <p id="statusText">未连接</p>
       </div>
-      <button id="authorizeButton" type="button">授权设备</button>
     </header>
 
     <section class="panel">
@@ -23,21 +22,25 @@
       </label>
 
       <label>
-        设备 Access Token
-        <input id="accessTokenInput" type="password" autocomplete="off" placeholder="托盘 App 接入前可临时粘贴">
+        当前 Token
+        <select id="tokenSelect"></select>
       </label>
 
-      <div class="inline-actions">
-        <button id="nativeTokenButton" type="button">从托盘 App 获取 Token</button>
-      </div>
+      <div class="token-editor">
+        <label>
+          Token 名称
+          <input id="tokenNameInput" type="text" maxlength="80" autocomplete="off" placeholder="例如：个人书签">
+        </label>
 
-      <label>
-        一次性授权码
-        <input id="deviceCodeInput" type="text" autocomplete="off" placeholder="从授权页复制 code">
-      </label>
+        <label>
+          Token
+          <input id="tokenValueInput" type="password" autocomplete="off" placeholder="生成新的或填写已有 Token">
+        </label>
 
-      <div class="inline-actions">
-        <button id="finishAuthorizationButton" type="button">完成授权</button>
+        <div class="inline-actions">
+          <button id="generateTokenButton" type="button">生成新 Token</button>
+          <button id="saveTokenButton" type="button">保存 Token</button>
+        </div>
       </div>
 
       <label>
@@ -50,14 +53,21 @@
         <input id="collectionNameInput" type="text" placeholder="例如：Bookmarks Bar">
       </label>
 
-      <label>
-        同步方式
-        <select id="modeSelect">
-          <option value="merge">合并</option>
-          <option value="local_over_server">本地覆盖服务器</option>
-          <option value="server_over_local">服务器覆盖本地</option>
-        </select>
-      </label>
+      <fieldset>
+        <legend>同步方式</legend>
+        <label class="radio-option">
+          <input type="radio" name="mode" value="merge">
+          合并
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="mode" value="local_over_server">
+          本地覆盖服务器
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="mode" value="server_over_local">
+          服务器覆盖本地
+        </label>
+      </fieldset>
     </section>
 
     <section class="panel bookmark-panel">

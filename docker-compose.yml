@@ -2,23 +2,21 @@ services:
   xsync:
     build:
       context: .
-    image: xsync:latest
-    container_name: xsync
+    image: xsync-lite:latest
+    container_name: xsync-lite
     restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     environment:
-      AUTH_MODE: ${AUTH_MODE:-sso_ticket}
+      AUTH_MODE: ${AUTH_MODE:-api_token}
       XSYNC_HOST: 0.0.0.0
-      XSYNC_PORT: ${XSYNC_PORT:-8791}
-      XSYNC_BASE_PATH: ${XSYNC_BASE_PATH:-/xsync}
+      XSYNC_PORT: ${XSYNC_PORT:-8792}
+      XSYNC_BASE_PATH: ${XSYNC_BASE_PATH:-/xsync-lite}
       XSYNC_DATA_DIR: /app/.data
       XSYNC_COOKIE_SECURE: ${XSYNC_COOKIE_SECURE:-true}
-      XSSO_BASE_URL: ${XSSO_BASE_URL:-http://host.docker.internal:7000/xsso}
+      XSSO_BASE_URL: ${XSSO_BASE_URL:-http://xsso:7000/xsso}
       XSSO_APP_CODE: ${XSSO_APP_CODE:-xsync}
-      XSSO_APP_SECRET: ${XSSO_APP_SECRET:?XSSO_APP_SECRET must be set}
+      XSSO_APP_SECRET: ${XSSO_APP_SECRET:-}
       XSSO_LOGIN_URL: ${XSSO_LOGIN_URL:-/xsso/launch}
     ports:
-      - "${XSYNC_BIND:-127.0.0.1}:${XSYNC_PORT:-8791}:${XSYNC_PORT:-8791}"
+      - "${XSYNC_BIND:-127.0.0.1}:${XSYNC_PORT:-8792}:${XSYNC_PORT:-8792}"
     volumes:
-      - ../data/xsync:/app/.data
+      - ../data/xsync-lite:/app/.data

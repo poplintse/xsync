@@ -72,6 +72,30 @@ select {
   padding: 9px 10px;
 }
 
+fieldset {
+  border: 0;
+  display: flex;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+}
+
+legend {
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.radio-option {
+  align-items: center;
+  display: flex;
+  gap: 5px;
+  margin: 0;
+}
+
+.radio-option input {
+  margin: 0;
+}
+
 button {
   border: 1px solid #b9c2b4;
   border-radius: 6px;
@@ -98,6 +122,13 @@ button:disabled {
   justify-content: space-between;
   gap: 10px;
   align-items: center;
+}
+
+.token-editor {
+  border: 1px solid #edf0ea;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  padding: 12px;
 }
 
 .bookmark-panel {

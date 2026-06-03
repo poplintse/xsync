@@ -1,6 +1,7 @@
 # xsync
 
-Self-hosted Chrome bookmark sync managed by xsso.
+Self-hosted Chrome bookmark sync. The lite version uses an API token as the
+account identifier: clients with the same token sync within the same account.
 
 Current scaffold includes:
 
@@ -12,16 +13,28 @@ Current scaffold includes:
 ## Run the Server Locally
 
 ```sh
-AUTH_MODE=local XSYNC_PORT=8791 XSYNC_COOKIE_SECURE=false npm run dev:server
+AUTH_MODE=api_token XSYNC_PORT=8792 XSYNC_BASE_PATH=/xsync-lite XSYNC_COOKIE_SECURE=false npm run dev:server
 ```
 
 Open:
 
 ```text
-http://127.0.0.1:8791/xsync/
+http://127.0.0.1:8792/xsync-lite/
 ```
 
-In production, set `AUTH_MODE=sso_ticket` and configure:
+In lite mode, no xsso configuration is required. Generate a long random token,
+for example:
+
+```sh
+openssl rand -hex 32
+```
+
+Configure that token in every client that should share an account. The server
+stores only its SHA-256 hash. A different or mistyped token creates a separate
+account.
+
+The full device authorization flow remains available by setting
+`AUTH_MODE=sso_ticket` and configuring:
 
 - `XSSO_BASE_URL`
 - `XSSO_APP_CODE`
@@ -34,17 +47,10 @@ In production, set `AUTH_MODE=sso_ticket` and configure:
 2. Enable Developer mode.
 3. Load unpacked extension from `extension/`.
 4. Open the xsync extension options page.
-5. Use `http://127.0.0.1:8791/xsync` as the server URL for local development.
-
-Until the tray app stores tokens in the OS credential store, use the server device authorization page to create a code, call `/api/device/authorize/finish`, and paste the returned access token into the extension.
-
-The extension now tries Native Messaging first:
-
-```text
-com.xunit.xsync -> {"type":"getAccessToken"}
-```
-
-If the tray app is not installed or does not return a token yet, the manually pasted access token remains the development fallback. The current tray skeleton can also return `XSYNC_ACCESS_TOKEN` from its environment for local Native Messaging testing.
+5. The production server URL defaults to `https://xunit.cc/xsync-lite/`. Use
+   `http://127.0.0.1:8792/xsync-lite/` for local development.
+6. Generate and name a token in the extension, then use the same token on each
+   extension that should sync together.
 
 ## Install Native Messaging Host
 
@@ -93,7 +99,8 @@ Windows tray app:
 native/windows/build.ps1
 ```
 
-The visible tray/menu app opens xsync authorization and console pages. On macOS, credential-sensitive token exchange is handled by the Swift Native Messaging host at `dist/macos/xsync-native-host`. The Rust host remains as a cross-platform target for later packaging.
+The native shells are retained for the full `sso_ticket` device authorization
+flow. The lite Chrome extension does not require them.
 
 ## Test
 
@@ -103,6 +110,7 @@ npm test
 
 The test starts a temporary local xsync server on a random port and verifies:
 
+- API token account sharing and isolation
 - local login callback
 - device authorization code creation
 - access token issuance

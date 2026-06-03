@@ -1,9 +1,84 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+
+test("api token mode uses the token as the account identifier", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "xsync-test-"));
+  const server = await startServer(dataDir, "api_token");
+  const baseUrl = server.baseUrl;
+  const sharedToken = "shared-lite-token-for-two-clients";
+  const otherToken = "different-lite-token";
+
+  try {
+    const home = await fetchText(`${baseUrl}/`);
+    assert.equal(home.status, 200);
+    assert.match(home.body, /xsync lite/);
+
+    const deviceAuthorization = await fetchJson(`${baseUrl}/api/device/authorize/start`, {
+      method: "POST"
+    });
+    assert.equal(deviceAuthorization.status, 404);
+
+    const nameAccount = await fetchJson(`${baseUrl}/api/account/token-name`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${sharedToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ token_name: "Personal Bookmarks" })
+    });
+    assert.equal(nameAccount.status, 200);
+    assert.equal(nameAccount.body.account.tokenName, "Personal Bookmarks");
+
+    const account = await fetchJson(`${baseUrl}/api/account`, {
+      headers: { "Authorization": `Bearer ${sharedToken}` }
+    });
+    assert.equal(account.status, 200);
+    assert.equal(account.body.account.tokenName, "Personal Bookmarks");
+
+    const sync = await fetchJson(`${baseUrl}/api/sync/apply`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${sharedToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        mode: "local_over_server",
+        collection_name: "Shared",
+        local_tree: {
+          stableId: "root",
+          type: "folder",
+          title: "Shared",
+          children: []
+        }
+      })
+    });
+    assert.equal(sync.status, 200);
+
+    const sameAccountCollections = await fetchJson(`${baseUrl}/api/collections`, {
+      headers: { "Authorization": `Bearer ${sharedToken}` }
+    });
+    assert.equal(sameAccountCollections.status, 200);
+    assert.equal(sameAccountCollections.body.collections.length, 1);
+
+    const otherAccountCollections = await fetchJson(`${baseUrl}/api/collections`, {
+      headers: { "Authorization": `Bearer ${otherToken}` }
+    });
+    assert.equal(otherAccountCollections.status, 200);
+    assert.equal(otherAccountCollections.body.collections.length, 0);
+
+    const storedData = await readFile(join(dataDir, "store.json"), "utf8");
+    assert.match(storedData, /Personal Bookmarks/);
+    assert.doesNotMatch(storedData, new RegExp(sharedToken));
+    assert.doesNotMatch(storedData, new RegExp(otherToken));
+  } finally {
+    server.kill();
+    await server.closed;
+  }
+});
 
 test("local device authorization and local-over-server sync flow", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "xsync-test-"));
@@ -138,12 +213,12 @@ async function fetchText(url, options) {
   return { status: response.status, body, headers: response.headers };
 }
 
-async function startServer(dataDir) {
+async function startServer(dataDir, authMode = "local") {
   const child = spawn(process.execPath, ["src/server/index.js"], {
     cwd: process.cwd(),
     env: {
       ...process.env,
-      AUTH_MODE: "local",
+      AUTH_MODE: authMode,
       XSYNC_PORT: "0",
       XSYNC_DATA_DIR: dataDir,
       XSYNC_COOKIE_SECURE: "false"
