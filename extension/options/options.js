@@ -4,6 +4,7 @@ const defaultConfig = {
   selectedTokenName: "",
   accountMode: "local",
   operation: "backup",
+  restoreMode: "merge",
   selectedBookmarkId: ""
 };
 
@@ -13,7 +14,6 @@ const els = {
   accountModeInputs: [...document.querySelectorAll('input[name="accountMode"]')],
   localAccountPanel: document.getElementById("localAccountPanel"),
   localAccountSelect: document.getElementById("localAccountSelect"),
-  useLocalAccountButton: document.getElementById("useLocalAccountButton"),
   startPairingButton: document.getElementById("startPairingButton"),
   pairingCodeBox: document.getElementById("pairingCodeBox"),
   newAccountPanel: document.getElementById("newAccountPanel"),
@@ -27,6 +27,7 @@ const els = {
   operationInputs: [...document.querySelectorAll('input[name="operation"]')],
   restorePanel: document.getElementById("restorePanel"),
   backupSelect: document.getElementById("backupSelect"),
+  restoreModeInputs: [...document.querySelectorAll('input[name="restoreMode"]')],
   refreshBackupsButton: document.getElementById("refreshBackupsButton"),
   bookmarkPanel: document.getElementById("bookmarkPanel"),
   reloadBookmarksButton: document.getElementById("reloadBookmarksButton"),
@@ -59,11 +60,13 @@ function bindConfig() {
   els.pairDeviceNameInput.value = deviceName;
   renderAccountMode();
   renderOperation();
+  renderRestoreMode();
 
   els.serverUrlInput.addEventListener("change", saveConfigFromForm);
   for (const input of els.accountModeInputs) input.addEventListener("change", changeAccountMode);
   for (const input of els.operationInputs) input.addEventListener("change", changeOperation);
-  els.useLocalAccountButton.addEventListener("click", useLocalAccount);
+  for (const input of els.restoreModeInputs) input.addEventListener("change", changeRestoreMode);
+  els.localAccountSelect.addEventListener("change", selectLocalAccount);
   els.startPairingButton.addEventListener("click", startPairing);
   els.createAccountButton.addEventListener("click", createAccount);
   els.finishPairingButton.addEventListener("click", finishPairing);
@@ -85,6 +88,10 @@ function renderOperation() {
   els.restorePanel.hidden = !restoring;
   els.bookmarkPanel.hidden = restoring;
   els.actionButton.textContent = restoring ? "立即恢复" : "立即备份";
+}
+
+function renderRestoreMode() {
+  for (const input of els.restoreModeInputs) input.checked = input.value === config.restoreMode;
 }
 
 async function changeAccountMode() {
@@ -110,6 +117,11 @@ async function changeOperation() {
   if (config.operation === "restore") await loadBackups();
 }
 
+async function changeRestoreMode() {
+  config.restoreMode = selectedRadioValue(els.restoreModeInputs, "merge");
+  await chrome.storage.local.set(config);
+}
+
 function renderLocalAccounts() {
   els.localAccountSelect.textContent = "";
   const placeholder = document.createElement("option");
@@ -127,14 +139,13 @@ function renderLocalAccounts() {
   }
 }
 
-async function useLocalAccount() {
+async function selectLocalAccount() {
   const name = els.localAccountSelect.value;
-  if (!name) return setResult("请选择本机已授权账户。", false);
   config.selectedTokenName = name;
   await chrome.storage.local.set(config);
-  setResult(`已使用账户 "${name}"。`, true);
+  setResult(name ? `已使用账户 "${name}"。` : "请选择本机已授权账户。", Boolean(name));
   renderStatus();
-  if (config.operation === "restore") await loadBackups();
+  if (name && config.operation === "restore") await loadBackups();
 }
 
 async function createAccount() {
@@ -382,13 +393,17 @@ async function createBackup(token) {
 async function restoreBackup(token) {
   const backupId = els.backupSelect.value;
   if (!backupId) return setResult("请选择要恢复的服务器备份。", false);
+  const restoreMode = config.restoreMode;
   setBusy(true);
   try {
     const result = await apiFetch(`/api/backups/${backupId}`, null, token, "GET");
     await loadBookmarks();
-    await mergeBackupIntoPath(result.backup.bookmarkPathParts ?? result.backup.bookmarkPath.split(" / "), result.tree);
+    const pathParts = result.backup.bookmarkPathParts ?? result.backup.bookmarkPath.split(" / ");
+    if (restoreMode === "replace") await replaceBackupIntoPath(pathParts, result.tree);
+    else await mergeBackupIntoPath(pathParts, result.tree);
     await loadBookmarks();
-    setResult(`恢复成功\n备份名称：${result.backup.name}\n恢复路径：${result.backup.bookmarkPath}\n恢复方式：合并本地与备份内容`, true);
+    const restoreModeText = restoreMode === "replace" ? "删除本地，由备份替代" : "与本地合并";
+    setResult(`恢复成功\n备份名称：${result.backup.name}\n恢复路径：${result.backup.bookmarkPath}\n恢复方式：${restoreModeText}`, true);
   } catch (error) {
     setResult(`恢复失败：${error.message}`, false);
   } finally {
@@ -421,10 +436,26 @@ async function parseResponse(response) {
 }
 
 async function mergeBackupIntoPath(pathParts, backupTree) {
+  const target = await findOrCreateTargetFolder(pathParts, backupTree);
+  await mergeBookmarkNode(target, backupTree);
+}
+
+async function replaceBackupIntoPath(pathParts, backupTree) {
+  const target = await findOrCreateTargetFolder(pathParts, backupTree);
+  const [freshTarget] = await chrome.bookmarks.getSubTree(target.id);
+  for (const child of freshTarget.children ?? []) {
+    if (child.url) await chrome.bookmarks.remove(child.id);
+    else await chrome.bookmarks.removeTree(child.id);
+  }
+  for (const child of backupTree.children ?? []) await createBookmarkNode(target.id, child);
+}
+
+async function findOrCreateTargetFolder(pathParts, backupTree) {
   const roots = await chrome.bookmarks.getTree();
   let current = roots[0];
   const parts = [...pathParts];
   if (parts[0] === bookmarkLabel(current)) parts.shift();
+  if (!parts.length) return current;
 
   for (const part of parts.slice(0, -1)) {
     current = await findOrCreateFolder(current, part);
@@ -432,11 +463,8 @@ async function mergeBackupIntoPath(pathParts, backupTree) {
 
   const targetName = parts.at(-1) || backupTree.title || "恢复的书签";
   const target = findMatchingChild(current, backupTree, targetName);
-  if (target) {
-    await mergeBookmarkNode(target, backupTree);
-    return;
-  }
-  await createBookmarkNode(current.id, { ...backupTree, title: targetName });
+  if (target) return target;
+  return chrome.bookmarks.create({ parentId: current.id, title: targetName });
 }
 
 async function findOrCreateFolder(parent, title) {
@@ -537,10 +565,10 @@ function renderStatus() {
 }
 
 function setBusy(isBusy) {
-  els.useLocalAccountButton.disabled = isBusy;
   els.startPairingButton.disabled = isBusy;
   els.createAccountButton.disabled = isBusy;
   els.finishPairingButton.disabled = isBusy;
+  for (const input of els.restoreModeInputs) input.disabled = isBusy;
   els.refreshBackupsButton.disabled = isBusy;
   els.actionButton.disabled = isBusy;
 }

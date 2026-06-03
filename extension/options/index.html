@@ -42,8 +42,7 @@
           本机已授权账户
           <select id="localAccountSelect"></select>
         </label>
-        <div class="inline-actions">
-          <button id="useLocalAccountButton" type="button">使用此账户</button>
+        <div class="left-actions">
           <button id="startPairingButton" type="button">添加新设备</button>
         </div>
         <p id="pairingCodeBox" class="pairing-code" hidden></p>
@@ -90,6 +89,17 @@
           服务器备份
           <select id="backupSelect"></select>
         </label>
+        <fieldset class="restore-mode">
+          <legend>恢复模式</legend>
+          <label class="radio-option">
+            <input type="radio" name="restoreMode" value="merge">
+            与本地合并
+          </label>
+          <label class="radio-option">
+            <input type="radio" name="restoreMode" value="replace">
+            删除本地，由备份替代
+          </label>
+        </fieldset>
         <button id="refreshBackupsButton" type="button">刷新备份列表</button>
       </div>
     </section>

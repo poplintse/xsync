@@ -126,12 +126,20 @@ button:disabled {
 }
 
 .panel-title,
-.actions,
-.inline-actions {
+.actions {
   display: flex;
   justify-content: space-between;
   gap: 10px;
   align-items: center;
+}
+
+.left-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+.restore-mode {
+  margin-bottom: 12px;
 }
 
 .token-editor {
