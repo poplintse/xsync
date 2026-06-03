@@ -5,12 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-test("api token mode uses the token as the account identifier", async () => {
+test("api token mode pairs devices into the same account", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "xsync-test-"));
   const server = await startServer(dataDir, "api_token");
   const baseUrl = server.baseUrl;
-  const sharedToken = "shared-lite-token-for-two-clients";
-  const otherToken = "different-lite-token";
 
   try {
     const home = await fetchText(`${baseUrl}/`);
@@ -22,31 +20,69 @@ test("api token mode uses the token as the account identifier", async () => {
     });
     assert.equal(deviceAuthorization.status, 404);
 
-    const nameAccount = await fetchJson(`${baseUrl}/api/account/token-name`, {
+    const invalidAccount = await fetchJson(`${baseUrl}/api/account`, {
+      headers: { "Authorization": "Bearer random-unissued-token" }
+    });
+    assert.equal(invalidAccount.status, 401);
+
+    const createAccount = await fetchJson(`${baseUrl}/api/accounts`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${sharedToken}`,
         "Content-Type": "application/json"
       },
+      body: JSON.stringify({ token_name: "Personal Bookmarks", device_name: "Home Chrome" })
+    });
+    assert.equal(createAccount.status, 201);
+    assert.equal(createAccount.body.account.tokenName, "Personal Bookmarks");
+    assert.equal(createAccount.body.device.name, "Home Chrome");
+    const firstDeviceToken = createAccount.body.access_token;
+
+    const duplicateAccount = await fetchJson(`${baseUrl}/api/accounts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token_name: "Personal Bookmarks" })
     });
-    assert.equal(nameAccount.status, 200);
-    assert.equal(nameAccount.body.account.tokenName, "Personal Bookmarks");
-
-    const tokenNames = await fetchJson(`${baseUrl}/api/token-names`);
-    assert.equal(tokenNames.status, 200);
-    assert.deepEqual(tokenNames.body.token_names, ["Personal Bookmarks"]);
+    assert.equal(duplicateAccount.status, 409);
 
     const account = await fetchJson(`${baseUrl}/api/account`, {
-      headers: { "Authorization": `Bearer ${sharedToken}` }
+      headers: { "Authorization": `Bearer ${firstDeviceToken}` }
     });
     assert.equal(account.status, 200);
     assert.equal(account.body.account.tokenName, "Personal Bookmarks");
 
+    const pairing = await fetchJson(`${baseUrl}/api/pairing/start`, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${firstDeviceToken}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({})
+    });
+    assert.equal(pairing.status, 201);
+    assert.match(pairing.body.code, /^\d{6}$/);
+
+    const finishPairing = await fetchJson(`${baseUrl}/api/pairing/finish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: pairing.body.code, device_name: "Office Chrome" })
+    });
+    assert.equal(finishPairing.status, 201);
+    assert.equal(finishPairing.body.account.tokenName, "Personal Bookmarks");
+    assert.equal(finishPairing.body.device.name, "Office Chrome");
+    const secondDeviceToken = finishPairing.body.access_token;
+    assert.notEqual(secondDeviceToken, firstDeviceToken);
+
+    const reusedPairing = await fetchJson(`${baseUrl}/api/pairing/finish`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: pairing.body.code, device_name: "Another Chrome" })
+    });
+    assert.equal(reusedPairing.status, 401);
+
     const sync = await fetchJson(`${baseUrl}/api/sync/apply`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${sharedToken}`,
+        "Authorization": `Bearer ${firstDeviceToken}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -66,7 +102,7 @@ test("api token mode uses the token as the account identifier", async () => {
     const repeatedSync = await fetchJson(`${baseUrl}/api/sync/apply`, {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${sharedToken}`,
+        "Authorization": `Bearer ${secondDeviceToken}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
@@ -85,32 +121,16 @@ test("api token mode uses the token as the account identifier", async () => {
     assert.equal(repeatedSync.body.collection.revision, 2);
 
     const sameAccountCollections = await fetchJson(`${baseUrl}/api/collections`, {
-      headers: { "Authorization": `Bearer ${sharedToken}` }
+      headers: { "Authorization": `Bearer ${secondDeviceToken}` }
     });
     assert.equal(sameAccountCollections.status, 200);
     assert.equal(sameAccountCollections.body.collections.length, 1);
 
-    const otherAccountCollections = await fetchJson(`${baseUrl}/api/collections`, {
-      headers: { "Authorization": `Bearer ${otherToken}` }
-    });
-    assert.equal(otherAccountCollections.status, 200);
-    assert.equal(otherAccountCollections.body.collections.length, 0);
-
-    const duplicateName = await fetchJson(`${baseUrl}/api/account/token-name`, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${otherToken}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({ token_name: "Personal Bookmarks" })
-    });
-    assert.equal(duplicateName.status, 409);
-    assert.equal(duplicateName.body.error, "token_name_exists");
-
     const storedData = await readFile(join(dataDir, "store.json"), "utf8");
     assert.match(storedData, /Personal Bookmarks/);
-    assert.doesNotMatch(storedData, new RegExp(sharedToken));
-    assert.doesNotMatch(storedData, new RegExp(otherToken));
+    assert.doesNotMatch(storedData, new RegExp(firstDeviceToken));
+    assert.doesNotMatch(storedData, new RegExp(secondDeviceToken));
+    assert.doesNotMatch(storedData, new RegExp(pairing.body.code));
   } finally {
     server.kill();
     await server.closed;

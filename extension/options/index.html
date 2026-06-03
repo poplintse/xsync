@@ -22,42 +22,55 @@
       </label>
 
       <fieldset class="token-mode">
-        <legend>Token</legend>
+        <legend>账户</legend>
         <label class="radio-option">
-          <input type="radio" name="tokenMode" value="existing">
-          使用已有 Token
+          <input type="radio" name="accountMode" value="local">
+          使用本机账户
         </label>
         <label class="radio-option">
-          <input type="radio" name="tokenMode" value="new">
-          生成新 Token
+          <input type="radio" name="accountMode" value="new">
+          新建账户
+        </label>
+        <label class="radio-option">
+          <input type="radio" name="accountMode" value="pair">
+          配对已有账户
         </label>
       </fieldset>
 
-      <div id="existingTokenPanel" class="token-editor">
+      <div id="localAccountPanel" class="token-editor">
         <label>
-          已保存的 Token 名称
-          <select id="existingTokenNameSelect"></select>
-        </label>
-        <label>
-          Token
-          <input id="existingTokenValueInput" type="password" autocomplete="off" placeholder="输入该名称对应的 Token">
+          本机已授权账户
+          <select id="localAccountSelect"></select>
         </label>
         <div class="inline-actions">
-          <button id="refreshTokenNamesButton" type="button">刷新名称列表</button>
-          <button id="useExistingTokenButton" type="button">使用此 Token</button>
+          <button id="useLocalAccountButton" type="button">使用此账户</button>
+          <button id="startPairingButton" type="button">添加新设备</button>
         </div>
+        <p id="pairingCodeBox" class="pairing-code" hidden></p>
       </div>
 
-      <div id="newTokenPanel" class="token-editor" hidden>
+      <div id="newAccountPanel" class="token-editor" hidden>
         <label>
-          Token 名称
-          <input id="newTokenNameInput" type="text" maxlength="80" autocomplete="off" placeholder="例如：个人书签">
+          账户名称
+          <input id="newAccountNameInput" type="text" maxlength="80" autocomplete="off" placeholder="例如：个人书签">
         </label>
-        <button id="generateTokenButton" type="button">生成新 Token 并保存</button>
-        <label id="generatedTokenField" class="generated-token-field" hidden>
-          新 Token，请妥善保存
-          <input id="generatedTokenOutput" type="text" readonly>
+        <label>
+          当前设备名称
+          <input id="newDeviceNameInput" type="text" maxlength="80" autocomplete="off" placeholder="例如：Home Chrome">
         </label>
+        <button id="createAccountButton" type="button">新建账户</button>
+      </div>
+
+      <div id="pairAccountPanel" class="token-editor" hidden>
+        <label>
+          配对码
+          <input id="pairingCodeInput" type="text" inputmode="numeric" maxlength="7" autocomplete="off" placeholder="由已授权设备生成">
+        </label>
+        <label>
+          当前设备名称
+          <input id="pairDeviceNameInput" type="text" maxlength="80" autocomplete="off" placeholder="例如：Office Chrome">
+        </label>
+        <button id="finishPairingButton" type="button">完成配对</button>
       </div>
 
       <fieldset>

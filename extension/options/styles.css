@@ -141,8 +141,15 @@ button:disabled {
   padding: 12px;
 }
 
-.generated-token-field {
+.pairing-code {
+  background: #edf8f1;
+  border: 1px solid #b9dec7;
+  border-radius: 6px;
+  color: #164a39;
+  font-size: 16px;
+  font-weight: 600;
   margin-top: 12px;
+  padding: 12px;
 }
 
 .bookmark-panel {

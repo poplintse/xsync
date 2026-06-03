@@ -2,7 +2,7 @@ const defaultConfig = {
   serverUrl: "https://xunit.cc/xsync-lite/",
   tokens: [],
   selectedTokenName: "",
-  tokenMode: "existing",
+  accountMode: "local",
   mode: "merge",
   selectedBookmarkId: ""
 };
@@ -10,17 +10,20 @@ const defaultConfig = {
 const els = {
   statusText: document.getElementById("statusText"),
   serverUrlInput: document.getElementById("serverUrlInput"),
-  tokenModeInputs: [...document.querySelectorAll('input[name="tokenMode"]')],
-  existingTokenPanel: document.getElementById("existingTokenPanel"),
-  existingTokenNameSelect: document.getElementById("existingTokenNameSelect"),
-  existingTokenValueInput: document.getElementById("existingTokenValueInput"),
-  refreshTokenNamesButton: document.getElementById("refreshTokenNamesButton"),
-  useExistingTokenButton: document.getElementById("useExistingTokenButton"),
-  newTokenPanel: document.getElementById("newTokenPanel"),
-  newTokenNameInput: document.getElementById("newTokenNameInput"),
-  generateTokenButton: document.getElementById("generateTokenButton"),
-  generatedTokenField: document.getElementById("generatedTokenField"),
-  generatedTokenOutput: document.getElementById("generatedTokenOutput"),
+  accountModeInputs: [...document.querySelectorAll('input[name="accountMode"]')],
+  localAccountPanel: document.getElementById("localAccountPanel"),
+  localAccountSelect: document.getElementById("localAccountSelect"),
+  useLocalAccountButton: document.getElementById("useLocalAccountButton"),
+  startPairingButton: document.getElementById("startPairingButton"),
+  pairingCodeBox: document.getElementById("pairingCodeBox"),
+  newAccountPanel: document.getElementById("newAccountPanel"),
+  newAccountNameInput: document.getElementById("newAccountNameInput"),
+  newDeviceNameInput: document.getElementById("newDeviceNameInput"),
+  createAccountButton: document.getElementById("createAccountButton"),
+  pairAccountPanel: document.getElementById("pairAccountPanel"),
+  pairingCodeInput: document.getElementById("pairingCodeInput"),
+  pairDeviceNameInput: document.getElementById("pairDeviceNameInput"),
+  finishPairingButton: document.getElementById("finishPairingButton"),
   modeInputs: [...document.querySelectorAll('input[name="mode"]')],
   reloadBookmarksButton: document.getElementById("reloadBookmarksButton"),
   bookmarkTree: document.getElementById("bookmarkTree"),
@@ -31,50 +34,52 @@ const els = {
 let config = { ...defaultConfig };
 let bookmarkRoots = [];
 let bookmarkById = new Map();
-let remoteTokenNames = [];
 
 init();
 
 async function init() {
   config = { ...defaultConfig, ...(await chrome.storage.local.get(defaultConfig)) };
   bindConfig();
+  renderLocalAccounts();
   await chrome.storage.local.set(config);
-  await Promise.all([loadTokenNames(), loadBookmarks()]);
+  await loadBookmarks();
   renderStatus();
 }
 
 function bindConfig() {
   els.serverUrlInput.value = config.serverUrl;
-  renderTokenMode();
+  const deviceName = defaultDeviceName();
+  els.newDeviceNameInput.value = deviceName;
+  els.pairDeviceNameInput.value = deviceName;
+  renderAccountMode();
   renderMode();
 
-  els.serverUrlInput.addEventListener("change", async () => {
-    await saveConfigFromForm();
-    await loadTokenNames();
-  });
-  for (const input of els.tokenModeInputs) input.addEventListener("change", changeTokenMode);
+  els.serverUrlInput.addEventListener("change", saveConfigFromForm);
+  for (const input of els.accountModeInputs) input.addEventListener("change", changeAccountMode);
   for (const input of els.modeInputs) input.addEventListener("change", saveConfigFromForm);
-  els.refreshTokenNamesButton.addEventListener("click", loadTokenNames);
-  els.useExistingTokenButton.addEventListener("click", useExistingToken);
-  els.generateTokenButton.addEventListener("click", generateAndSaveToken);
+  els.useLocalAccountButton.addEventListener("click", useLocalAccount);
+  els.startPairingButton.addEventListener("click", startPairing);
+  els.createAccountButton.addEventListener("click", createAccount);
+  els.finishPairingButton.addEventListener("click", finishPairing);
   els.reloadBookmarksButton.addEventListener("click", loadBookmarks);
   els.syncButton.addEventListener("click", runSync);
 }
 
-function renderTokenMode() {
-  for (const input of els.tokenModeInputs) input.checked = input.value === config.tokenMode;
-  els.existingTokenPanel.hidden = config.tokenMode !== "existing";
-  els.newTokenPanel.hidden = config.tokenMode !== "new";
+function renderAccountMode() {
+  for (const input of els.accountModeInputs) input.checked = input.value === config.accountMode;
+  els.localAccountPanel.hidden = config.accountMode !== "local";
+  els.newAccountPanel.hidden = config.accountMode !== "new";
+  els.pairAccountPanel.hidden = config.accountMode !== "pair";
 }
 
 function renderMode() {
   for (const input of els.modeInputs) input.checked = input.value === config.mode;
 }
 
-async function changeTokenMode() {
-  config.tokenMode = selectedRadioValue(els.tokenModeInputs, "existing");
+async function changeAccountMode() {
+  config.accountMode = selectedRadioValue(els.accountModeInputs, "local");
   await chrome.storage.local.set(config);
-  renderTokenMode();
+  renderAccountMode();
 }
 
 async function saveConfigFromForm() {
@@ -88,74 +93,90 @@ async function saveConfigFromForm() {
   renderStatus();
 }
 
-async function loadTokenNames() {
-  await saveConfigFromForm();
-  try {
-    const response = await publicFetch("/api/token-names");
-    remoteTokenNames = response.token_names ?? [];
-    renderTokenNames();
-  } catch (error) {
-    remoteTokenNames = [];
-    renderTokenNames();
-    setResult(`读取 Token 名称失败：${error.message}`, false);
-  }
-}
-
-function renderTokenNames() {
-  els.existingTokenNameSelect.textContent = "";
+function renderLocalAccounts() {
+  els.localAccountSelect.textContent = "";
   const placeholder = document.createElement("option");
   placeholder.value = "";
-  placeholder.textContent = remoteTokenNames.length ? "请选择 Token 名称" : "服务器上暂无 Token";
-  els.existingTokenNameSelect.appendChild(placeholder);
-
-  for (const name of remoteTokenNames) {
+  placeholder.textContent = config.tokens.length ? "请选择账户" : "本机暂无已授权账户";
+  els.localAccountSelect.appendChild(placeholder);
+  for (const item of config.tokens) {
     const option = document.createElement("option");
-    option.value = name;
-    option.textContent = name;
-    els.existingTokenNameSelect.appendChild(option);
+    option.value = item.name;
+    option.textContent = item.name;
+    els.localAccountSelect.appendChild(option);
   }
-  if (remoteTokenNames.includes(config.selectedTokenName)) els.existingTokenNameSelect.value = config.selectedTokenName;
+  if (config.tokens.some((item) => item.name === config.selectedTokenName)) {
+    els.localAccountSelect.value = config.selectedTokenName;
+  }
 }
 
-async function useExistingToken() {
+async function useLocalAccount() {
+  const name = els.localAccountSelect.value;
+  if (!name) return setResult("请选择本机已授权账户。", false);
+  config.selectedTokenName = name;
+  await chrome.storage.local.set(config);
+  setResult(`已使用账户 "${name}"。`, true);
+  renderStatus();
+}
+
+async function createAccount() {
   await saveConfigFromForm();
-  const name = els.existingTokenNameSelect.value;
-  const token = els.existingTokenValueInput.value.trim() || localToken(name);
-  if (!name) return setResult("请选择服务器上已有的 Token 名称。", false);
-  if (!token) return setResult("请输入该名称对应的 Token。", false);
+  const name = els.newAccountNameInput.value.trim();
+  const deviceName = els.newDeviceNameInput.value.trim() || defaultDeviceName();
+  if (!name) return setResult("请填写账户名称。", false);
 
   setBusy(true);
   try {
-    const response = await apiFetch("/api/account", null, token, "GET");
-    if (response.account.tokenName !== name) throw new Error("token_name_mismatch");
-    saveLocalToken(name, token);
-    els.existingTokenValueInput.value = "";
-    setResult(`已使用 Token "${name}"。`, true);
+    const response = await publicPost("/api/accounts", { token_name: name, device_name: deviceName });
+    saveLocalToken(response.account.tokenName, response.access_token);
+    els.newAccountNameInput.value = "";
+    config.accountMode = "local";
+    renderLocalAccounts();
+    renderAccountMode();
+    setResult(`账户 "${response.account.tokenName}" 已创建，当前设备已授权。`, true);
   } catch (error) {
-    setResult(`使用已有 Token 失败：${error.message}`, false);
+    setResult(`新建账户失败：${error.message}`, false);
   } finally {
     setBusy(false);
     renderStatus();
   }
 }
 
-async function generateAndSaveToken() {
+async function startPairing() {
   await saveConfigFromForm();
-  const name = els.newTokenNameInput.value.trim();
-  if (!name) return setResult("请填写 Token 名称。", false);
-  const token = randomToken();
+  const token = currentToken();
+  if (!token) return setResult("请先选择本机已授权账户。", false);
 
   setBusy(true);
   try {
-    const response = await apiFetch("/api/account/token-name", { token_name: name }, token);
-    saveLocalToken(response.account.tokenName, token);
-    els.generatedTokenOutput.value = token;
-    els.generatedTokenField.hidden = false;
-    els.newTokenNameInput.value = "";
-    await loadTokenNames();
-    setResult(`新 Token "${name}" 已保存并设为当前 Token。请妥善保存显示的 Token。`, true);
+    const response = await apiFetch("/api/pairing/start", {}, token);
+    els.pairingCodeBox.textContent = `配对码：${formatPairingCode(response.code)}，5 分钟内有效，仅可使用一次。`;
+    els.pairingCodeBox.hidden = false;
+    setResult(`已为账户 "${response.account.tokenName}" 生成配对码。`, true);
   } catch (error) {
-    setResult(`生成 Token 失败：${error.message}`, false);
+    setResult(`生成配对码失败：${error.message}`, false);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function finishPairing() {
+  await saveConfigFromForm();
+  const code = els.pairingCodeInput.value.replace(/\s+/g, "");
+  const deviceName = els.pairDeviceNameInput.value.trim() || defaultDeviceName();
+  if (!/^\d{6}$/.test(code)) return setResult("请输入 6 位配对码。", false);
+
+  setBusy(true);
+  try {
+    const response = await publicPost("/api/pairing/finish", { code, device_name: deviceName });
+    saveLocalToken(response.account.tokenName, response.access_token);
+    els.pairingCodeInput.value = "";
+    config.accountMode = "local";
+    renderLocalAccounts();
+    renderAccountMode();
+    setResult(`已配对账户 "${response.account.tokenName}"，当前设备已授权。`, true);
+  } catch (error) {
+    setResult(`配对失败：${error.message}`, false);
   } finally {
     setBusy(false);
     renderStatus();
@@ -163,19 +184,19 @@ async function generateAndSaveToken() {
 }
 
 function saveLocalToken(name, token) {
-  config.tokens = config.tokens.filter((item) => item.name !== name && item.token !== token);
+  config.tokens = config.tokens.filter((item) => item.name !== name);
   config.tokens.push({ name, token });
   config.selectedTokenName = name;
   chrome.storage.local.set(config);
 }
 
 async function loadBookmarks() {
-  setResult("正在读取 Chrome 书签...", true);
+  setResult("正在读取 Chrome 书签...");
   bookmarkRoots = await chrome.bookmarks.getTree();
   bookmarkById = new Map();
   for (const root of bookmarkRoots) indexBookmarkNode(root, []);
   renderBookmarkTree();
-  setResult("请选择一个本地书签目录或具体书签。", true);
+  setResult("请选择一个本地书签目录或具体书签。");
 }
 
 function indexBookmarkNode(node, parentPath) {
@@ -198,13 +219,11 @@ function appendBookmarkNode(parent, node, inheritedSelection) {
   const item = document.createElement("li");
   const label = document.createElement("label");
   label.className = `tree-option${selected ? " selected" : ""}${inheritedSelection ? " inherited" : ""}`;
-
   const checkbox = document.createElement("input");
   checkbox.type = "checkbox";
   checkbox.checked = included;
   checkbox.disabled = inheritedSelection;
   checkbox.addEventListener("change", () => selectBookmarkNode(node.id));
-
   const text = document.createElement("span");
   text.textContent = bookmarkLabel(node);
   label.append(checkbox, text);
@@ -234,8 +253,8 @@ function bookmarkLabel(node) {
 async function runSync() {
   await saveConfigFromForm();
   if (!config.selectedBookmarkId) return setResult("请先选择一个本地书签目录或具体书签。", false);
-  const token = localToken(config.selectedTokenName);
-  if (!token) return setResult("请先使用已有 Token 或生成新 Token。", false);
+  const token = currentToken();
+  if (!token) return setResult("请先新建账户、配对账户或选择本机账户。", false);
 
   setBusy(true);
   try {
@@ -258,21 +277,20 @@ async function runSync() {
 }
 
 async function apiFetch(path, body, token, method = "POST") {
-  const options = {
-    method,
-    headers: { "Authorization": `Bearer ${token}` }
-  };
+  const options = { method, headers: { "Authorization": `Bearer ${token}` } };
   if (body !== null) {
     options.headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(body);
   }
-  const response = await fetch(`${serverBaseUrl()}${path}`, options);
-  return parseResponse(response);
+  return parseResponse(await fetch(`${serverBaseUrl()}${path}`, options));
 }
 
-async function publicFetch(path) {
-  const response = await fetch(`${serverBaseUrl()}${path}`);
-  return parseResponse(response);
+async function publicPost(path, body) {
+  return parseResponse(await fetch(`${serverBaseUrl()}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  }));
 }
 
 async function parseResponse(response) {
@@ -322,14 +340,8 @@ function stableIdFor(node) {
   return `chrome-${Math.abs(hash)}`;
 }
 
-function localToken(name) {
-  return config.tokens.find((item) => item.name === name)?.token ?? "";
-}
-
-function randomToken() {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+function currentToken() {
+  return config.tokens.find((item) => item.name === config.selectedTokenName)?.token ?? "";
 }
 
 function selectedRadioValue(inputs, fallback) {
@@ -345,22 +357,31 @@ function serverBaseUrl() {
   return config.serverUrl.replace(/\/+$/, "");
 }
 
+function defaultDeviceName() {
+  return `Chrome on ${navigator.platform || "device"}`;
+}
+
+function formatPairingCode(code) {
+  return `${code.slice(0, 3)} ${code.slice(3)}`;
+}
+
 function formatTime(value) {
   return value ? new Date(value).toLocaleString() : new Date().toLocaleString();
 }
 
 function renderStatus() {
   const parts = [];
-  parts.push(config.selectedTokenName ? `Token ${config.selectedTokenName}` : "未选择 Token");
+  parts.push(config.selectedTokenName ? `账户 ${config.selectedTokenName}` : "未选择账户");
   const selected = bookmarkById.get(config.selectedBookmarkId);
   if (selected) parts.push(selected.path.join(" / "));
   els.statusText.textContent = parts.join(" · ");
 }
 
 function setBusy(isBusy) {
-  els.refreshTokenNamesButton.disabled = isBusy;
-  els.useExistingTokenButton.disabled = isBusy;
-  els.generateTokenButton.disabled = isBusy;
+  els.useLocalAccountButton.disabled = isBusy;
+  els.startPairingButton.disabled = isBusy;
+  els.createAccountButton.disabled = isBusy;
+  els.finishPairingButton.disabled = isBusy;
   els.syncButton.disabled = isBusy;
 }
 

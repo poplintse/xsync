@@ -23,6 +23,7 @@ const config = {
 const storePath = join(config.dataDir, "store.json");
 const sessions = new Map();
 let store = await loadStore();
+store.pairingCodes ??= [];
 
 const server = createServer((req, res) => {
   handleRequest(req, res).catch((error) => {
@@ -96,12 +97,14 @@ async function handleRequest(req, res) {
     return refreshDeviceToken(res, body);
   }
 
-  if (config.authMode === "api_token" && req.method === "GET" && routePath === "/api/token-names") {
-    const tokenNames = store.users
-      .map((user) => user.tokenName)
-      .filter(Boolean)
-      .sort((left, right) => left.localeCompare(right));
-    return sendJson(res, 200, { token_names: tokenNames });
+  if (config.authMode === "api_token" && req.method === "POST" && routePath === "/api/accounts") {
+    const body = await readJsonBody(req);
+    return createLiteAccount(res, body);
+  }
+
+  if (config.authMode === "api_token" && req.method === "POST" && routePath === "/api/pairing/finish") {
+    const body = await readJsonBody(req);
+    return finishLitePairing(res, body);
   }
 
   if (routePath.startsWith("/api/")) {
@@ -118,18 +121,9 @@ async function handleApiRoute(req, res, routePath, auth) {
     return sendJson(res, 200, { account: publicUser(auth.user) });
   }
 
-  if (config.authMode === "api_token" && req.method === "POST" && routePath === "/api/account/token-name") {
+  if (config.authMode === "api_token" && req.method === "POST" && routePath === "/api/pairing/start") {
     const body = await readJsonBody(req);
-    const tokenName = String(body.token_name ?? body.tokenName ?? "").trim();
-    if (!tokenName) return sendJson(res, 400, { error: "missing_token_name" });
-    if (tokenName.length > 80) return sendJson(res, 400, { error: "token_name_too_long" });
-    const existing = store.users.find((user) => user.id !== auth.user.id && user.tokenName === tokenName);
-    if (existing) return sendJson(res, 409, { error: "token_name_exists" });
-    auth.user.tokenName = tokenName;
-    auth.user.displayName = tokenName;
-    auth.user.updatedAt = new Date().toISOString();
-    await saveStore();
-    return sendJson(res, 200, { account: publicUser(auth.user) });
+    return startLitePairing(res, auth, body);
   }
 
   if (req.method === "GET" && routePath === "/api/collections") {
@@ -204,6 +198,100 @@ async function verifyXssoTicket(ticket) {
   });
   if (!response.ok) return { active: false };
   return response.json();
+}
+
+async function createLiteAccount(res, body) {
+  const tokenName = normalizeTokenName(body.token_name ?? body.tokenName);
+  if (!tokenName.ok) return sendJson(res, tokenName.status, { error: tokenName.error });
+  if (store.users.some((user) => user.tokenName === tokenName.value)) {
+    return sendJson(res, 409, { error: "token_name_exists" });
+  }
+
+  const now = new Date().toISOString();
+  const user = {
+    id: nextId("user"),
+    tokenName: tokenName.value,
+    username: tokenName.value,
+    displayName: tokenName.value,
+    createdAt: now,
+    updatedAt: now
+  };
+  store.users.push(user);
+  const issued = issueLiteDeviceToken(user.id, body.device_name ?? body.deviceName ?? "Chrome");
+  await saveStore();
+  return sendJson(res, 201, {
+    access_token: issued.token,
+    token_type: "Bearer",
+    account: publicUser(user),
+    device: publicDevice(issued.device)
+  });
+}
+
+async function startLitePairing(res, auth, body) {
+  const code = randomNumericCode(6);
+  const now = new Date();
+  store.pairingCodes.push({
+    codeHash: hashToken(code),
+    userId: auth.user.id,
+    createdByDeviceId: auth.device.id,
+    expiresAt: new Date(now.getTime() + 5 * 60 * 1000).toISOString(),
+    usedAt: null,
+    createdAt: now.toISOString()
+  });
+  await saveStore();
+  return sendJson(res, 201, {
+    code,
+    expires_in: 300,
+    account: publicUser(auth.user),
+    device_name: String(body.device_name ?? body.deviceName ?? "")
+  });
+}
+
+async function finishLitePairing(res, body) {
+  const code = String(body.code ?? "").replace(/\s+/g, "");
+  if (!/^\d{6}$/.test(code)) return sendJson(res, 401, { error: "invalid_pairing_code" });
+  const codeHash = hashToken(code);
+  const record = store.pairingCodes.find((item) => !item.usedAt && safeEqual(item.codeHash, codeHash));
+  if (!record) return sendJson(res, 401, { error: "invalid_pairing_code" });
+  if (Date.parse(record.expiresAt) < Date.now()) return sendJson(res, 401, { error: "expired_pairing_code" });
+
+  const user = store.users.find((item) => item.id === record.userId);
+  if (!user) return sendJson(res, 401, { error: "invalid_user" });
+  const issued = issueLiteDeviceToken(user.id, body.device_name ?? body.deviceName ?? "Chrome");
+  record.usedAt = new Date().toISOString();
+  await saveStore();
+  return sendJson(res, 201, {
+    access_token: issued.token,
+    token_type: "Bearer",
+    account: publicUser(user),
+    device: publicDevice(issued.device)
+  });
+}
+
+function issueLiteDeviceToken(userId, deviceName) {
+  const token = randomToken(32);
+  const now = new Date().toISOString();
+  const device = {
+    id: nextId("device"),
+    userId,
+    authType: "api_token",
+    name: String(deviceName || "Chrome"),
+    platform: "chrome",
+    accessTokenHash: hashToken(token),
+    refreshTokenHash: null,
+    revokedAt: null,
+    lastSeenAt: now,
+    createdAt: now
+  };
+  store.devices.push(device);
+  return { token, device };
+}
+
+function normalizeTokenName(value) {
+  const tokenName = String(value ?? "").trim();
+  if (!tokenName) return { ok: false, status: 400, error: "missing_token_name" };
+  if (tokenName.length > 80) return { ok: false, status: 400, error: "token_name_too_long" };
+  return { ok: true, value: tokenName };
 }
 
 function createDeviceCode(userId, body) {
@@ -415,40 +503,11 @@ function authenticateApi(req) {
 
 function authenticateApiToken(token) {
   const tokenHash = hashToken(token);
-  let user = store.users.find((item) => item.apiTokenHash && safeEqual(item.apiTokenHash, tokenHash));
-  let device = store.devices.find((item) => item.authType === "api_token" && !item.revokedAt && safeEqual(item.accessTokenHash, tokenHash));
-
-  if (!user) {
-    const accountName = `lite-${tokenHash.slice(0, 12)}`;
-    user = {
-      id: nextId("user"),
-      apiTokenHash: tokenHash,
-      username: accountName,
-      displayName: accountName,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    store.users.push(user);
-  }
-
-  if (!device) {
-    device = {
-      id: nextId("device"),
-      userId: user.id,
-      authType: "api_token",
-      name: "Lite API Token",
-      platform: "api_token",
-      accessTokenHash: tokenHash,
-      refreshTokenHash: null,
-      revokedAt: null,
-      lastSeenAt: new Date().toISOString(),
-      createdAt: new Date().toISOString()
-    };
-    store.devices.push(device);
-  } else {
-    device.lastSeenAt = new Date().toISOString();
-  }
-
+  const device = store.devices.find((item) => item.authType === "api_token" && !item.revokedAt && safeEqual(item.accessTokenHash, tokenHash));
+  if (!device) return { ok: false, status: 401, error: "invalid_token" };
+  const user = store.users.find((item) => item.id === device.userId);
+  if (!user) return { ok: false, status: 401, error: "invalid_user" };
+  device.lastSeenAt = new Date().toISOString();
   saveStore();
   return { ok: true, user, device };
 }
@@ -523,9 +582,9 @@ code{background:#eef1ed;padding:2px 5px;border-radius:4px}
 <main>
   <h1>xsync lite</h1>
   <section>
-    <p>服务端已启用 API token 账户模式。</p>
-    <p>在每个客户端配置相同的长期随机 token，即会同步到同一个账户。</p>
-    <p>API 请求使用 <code>Authorization: Bearer &lt;token&gt;</code>，服务端只保存 token 哈希。</p>
+    <p>服务端已启用设备配对账户模式。</p>
+    <p>已授权设备可生成一次性配对码，将新设备加入同一个同步账户。</p>
+    <p>每台设备使用独立的 API token，服务端只保存 token 哈希。</p>
   </section>
 </main>
 </html>`;
@@ -568,6 +627,7 @@ async function loadStore() {
       users: [],
       devices: [],
       deviceCodes: [],
+      pairingCodes: [],
       collections: [],
       syncSnapshots: []
     };
@@ -750,6 +810,11 @@ function buildCookie(name, value) {
 
 function randomToken(bytes) {
   return randomBytes(bytes).toString("base64url");
+}
+
+function randomNumericCode(length) {
+  const limit = 10 ** length;
+  return String(Number.parseInt(randomBytes(4).toString("hex"), 16) % limit).padStart(length, "0");
 }
 
 function hashToken(token) {
