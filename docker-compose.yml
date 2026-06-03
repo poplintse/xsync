@@ -1,3 +1,5 @@
+name: xsync-lite
+
 services:
   xsync:
     build:
